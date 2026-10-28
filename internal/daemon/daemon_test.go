@@ -61,9 +61,15 @@ func start(t *testing.T, opts Options) error {
 		return err
 	}
 	t.Cleanup(func() {
+		began := time.Now()
 		cancel()
 		if err := <-done; err != nil {
 			t.Errorf("Run: %v", err)
+		}
+		// Run cuts connections that outlast its 5s shutdown wait; reaching
+		// that means some client left a connection open (issue #40).
+		if took := time.Since(began); took > 4*time.Second {
+			t.Errorf("Run took %s to shut down; a connection held it up", took)
 		}
 	})
 	return nil

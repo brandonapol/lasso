@@ -241,7 +241,7 @@ func TestSessions(t *testing.T) {
 		sChatty:  {adapter.Idle, true}, // its TUI entry has a dead pid
 		sWaiting: {adapter.Waiting, true},
 		sRunning: {adapter.Running, false},
-		sLive:    {adapter.Running, false},
+		sLive:    {adapter.Running, true}, // a message waits for the window, or goes through the leader
 		sListed:  {adapter.Idle, true},
 	}
 	for id, w := range want {
@@ -500,7 +500,7 @@ func TestSendRetriesFresh(t *testing.T) {
 
 func TestSendReadOnly(t *testing.T) {
 	f := newFixture(t)
-	for _, id := range []string{sLive, sRunning} {
+	for _, id := range []string{sRunning} {
 		err := f.a.Send(context.Background(), id, "hi")
 		if !errors.Is(err, adapter.ErrReadOnly) {
 			t.Errorf("%s: err = %v, want read-only", id, err)
