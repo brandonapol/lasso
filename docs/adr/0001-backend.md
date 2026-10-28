@@ -60,7 +60,7 @@ The source of truth is GitHub, saddle, and the bots' own session files. lasso ne
 | Answers to decisions, and read cursors ("last seen") | SQLite, `~/.local/state/lasso/lasso.db` | so the brief knows what's new |
 | Caches: GitHub responses, digests, summaries | the same SQLite file, with TTLs | for speed only |
 
-Deleting `lasso.db` loses read cursors and caches, nothing else. A test enforces this: it deletes the database, restarts, and checks that rules and the audit log are intact and that the views come back.
+Deleting `lasso.db` loses read cursors, caches and any messages still held for a busy bot session (#51), nothing else. A test enforces this: it deletes the database, restarts, and checks that rules and the audit log are intact and that the views come back.
 
 **What lasso never does on its own:**
 
