@@ -47,10 +47,11 @@ func CallerFrom(ctx context.Context) Caller {
 }
 
 // guard refuses requests for a non-loopback Host (DNS rebinding) or from a
-// foreign Origin with 403, and requests without a known token with 401.
-// Paths in open skip the token check but not the Host and Origin checks.
-// The token a request carried decides its Caller.
-func guard(next http.Handler, tokens map[Caller]string, port int, open map[string]bool) http.Handler {
+// foreign Origin with 403, and requests without a known token or web
+// session with 401. Paths open reports true for skip the token check but
+// not the Host and Origin checks. The token a request carried decides its
+// Caller; a web session (see static.go) is always CallerUser.
+func guard(next http.Handler, tokens map[Caller]string, port int, open func(string) bool, web *webAuth) http.Handler {
 	origins := map[string]bool{
 		"http://127.0.0.1:" + strconv.Itoa(port): true,
 		"http://localhost:" + strconv.Itoa(port): true,
@@ -68,14 +69,19 @@ func guard(next http.Handler, tokens map[Caller]string, port int, open map[strin
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
-		if !open[r.URL.Path] {
+		if !open(r.URL.Path) {
 			caller := authenticate([]byte(bearerToken(r)), tokens)
+			ctx := r.Context()
+			if caller == CallerNone && web != nil && web.fromSession(r) {
+				caller = CallerUser
+				ctx = context.WithValue(ctx, sessionKey{}, true)
+			}
 			if caller == CallerNone {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="lasso"`)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			r = r.WithContext(context.WithValue(r.Context(), callerKey{}, caller))
+			r = r.WithContext(context.WithValue(ctx, callerKey{}, caller))
 		}
 		next.ServeHTTP(w, r)
 	})
