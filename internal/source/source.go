@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brandonapol/lasso/internal/adapter"
@@ -49,6 +50,18 @@ type Options struct {
 	// Suggest, if set, returns the rules lasso offers to add (from the
 	// user's recent answers). Each one is a brief item on Summaries.
 	Suggest func(now time.Time) ([]rules.Suggestion, error)
+	// Digest, if set, takes every bot event: its brief points become brief
+	// items on Summaries, and each session's "N → k" goes on its row. Only
+	// what a bot waits on the user for is then an item of its own. Nil
+	// makes every bot event an item.
+	Digest Digester
+	// Summaries, if set, gives each hot repo's summary for Summaries.
+	Summaries SummaryReader
+	// SessionRepo, if set, says which repo (owner/name) a bot session
+	// works in, "" when it can't tell. It is asked once per session.
+	SessionRepo func(kind string, se adapter.Session) string
+	// Notices are fixed brief items on Summaries (a missing key).
+	Notices []Notice
 }
 
 // subBuffer is how many events a subscriber may fall behind before it is
@@ -82,8 +95,16 @@ type Source struct {
 	events   map[string]adapter.Event     // by item id
 	cursors  map[string]adapter.Cursor    // by adapter kind
 	problems map[string]botProblem        // by adapter kind
+	// sessionRepo is each session's repo ("" when unknown), by kind\x00id.
+	sessionRepo map[string]string
+	// The digest's queue and the brief points it wrote, oldest first.
+	digestQ  []adapter.Event
+	points   []point
+	pointSeq int
 
-	wake chan struct{}
+	wake       chan struct{}
+	botsDue    atomic.Bool
+	digestWake chan struct{}
 
 	mu    sync.Mutex
 	rows  map[string]row
@@ -142,8 +163,11 @@ func New(opts Options) *Source {
 		cursors:   map[string]adapter.Cursor{},
 		problems:  map[string]botProblem{},
 		wake:      make(chan struct{}, 1),
-		rows:      map[string]row{},
-		subs:      map[chan api.Event]struct{}{},
+
+		sessionRepo: map[string]string{},
+		digestWake:  make(chan struct{}, 1),
+		rows:        map[string]row{},
+		subs:        map[chan api.Event]struct{}{},
 	}
 	// One poller per repo, so each poll's error belongs to one repo.
 	for _, repo := range opts.Repos {
@@ -155,6 +179,16 @@ func New(opts Options) *Source {
 
 // Run polls until ctx ends. Wake makes it refresh early.
 func (s *Source) Run(ctx context.Context) error {
+	dctx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.digestLoop(dctx)
+	}()
+	defer func() {
+		stop()
+		<-done
+	}()
 	for {
 		next := s.Step(ctx)
 		if ctx.Err() != nil {
@@ -176,7 +210,7 @@ func (s *Source) Step(ctx context.Context) time.Time {
 	now := s.opts.Clock.Now()
 	soonest := now.Add(RefreshEvery)
 	if len(s.opts.Adapters) > 0 {
-		if s.lastBots.IsZero() || !now.Before(s.lastBots.Add(BotsEvery)) {
+		if s.botsDue.Swap(false) || s.lastBots.IsZero() || !now.Before(s.lastBots.Add(BotsEvery)) {
 			s.pollBots(ctx)
 			s.lastBots = now
 		}

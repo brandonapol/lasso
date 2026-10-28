@@ -43,10 +43,13 @@ const (
 	AnswerPrompt Action = "answer_prompt"
 	Comment      Action = "comment"
 	Label        Action = "label"
+	// SendMessage sends a message to a bot session (the agent pane passing
+	// on what the user said, or a rule letting one bot nudge another).
+	SendMessage Action = "send_message"
 )
 
 // Actions lists every action kind a rule may name.
-var Actions = []Action{FileIssue, CIRetry, FixSmall, AnswerPrompt, Comment, Label}
+var Actions = []Action{FileIssue, CIRetry, FixSmall, AnswerPrompt, Comment, Label, SendMessage}
 
 // Valid reports whether a is a known action kind.
 func (a Action) Valid() bool { return slices.Contains(Actions, a) }
@@ -66,6 +69,8 @@ func (a Action) Plain() string {
 		return "post comments"
 	case Label:
 		return "add labels"
+	case SendMessage:
+		return "send messages to bot sessions"
 	}
 	return string(a)
 }

@@ -85,6 +85,36 @@ func TestSaddleAdapter(t *testing.T) {
 	}
 }
 
+func TestLocalAdapters(t *testing.T) {
+	home := t.TempDir()
+	cfg, err := LoadFile(write(t, "[adapters.grok]\nenabled = false\n[adapters.claude]\ndir = \"~/cc\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unset: on only when the directory exists.
+	dir, on := cfg.Adapters.Claude.Resolve(home, ClaudeDir(home))
+	if dir != filepath.Join(home, "cc") || on {
+		t.Fatalf("claude = %q %v", dir, on)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, on := cfg.Adapters.Claude.Resolve(home, ClaudeDir(home)); !on {
+		t.Fatal("claude off with its directory present")
+	}
+	// Enabled = false wins over an existing directory.
+	gdir := GrokDir(home, func(string) string { return "" })
+	if err := os.MkdirAll(gdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if d, on := cfg.Adapters.Grok.Resolve(home, gdir); on || d != gdir {
+		t.Fatalf("grok = %q %v", d, on)
+	}
+	if d := GrokDir(home, func(k string) string { return map[string]string{"GROK_HOME": "/g"}[k] }); d != "/g" {
+		t.Fatal(d)
+	}
+}
+
 func TestXDGDirs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/x/cfg")
 	t.Setenv("XDG_STATE_HOME", "/x/state")

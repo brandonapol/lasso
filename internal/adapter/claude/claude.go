@@ -494,3 +494,15 @@ func randomID() string {
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
+
+// Cwd is the directory session id was started in, if lasso has read it.
+// The daemon uses it to tell which repo a session works in.
+func (a *Adapter) Cwd(id string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f := a.files[id]
+	if f == nil || f.cwd == "" {
+		return "", false
+	}
+	return f.cwd, true
+}

@@ -82,6 +82,7 @@ func (s *Source) attentionItems(ctx context.Context) []attention.Item {
 		})
 	}
 	items = append(items, s.botItems(ctx)...)
+	items = append(items, s.digestItems()...)
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	return items
 }
@@ -144,6 +145,8 @@ func (s *Source) buildRows(items []attention.Item, now time.Time, sugs []rules.S
 	}
 	s.botRows(add)
 	suggestionRows(sugs, add)
+	s.summaryRows(add)
+	s.digestRows(add)
 	for repo, e := range s.errs {
 		for _, tab := range []api.Tab{api.TabIssues, api.TabActions} {
 			add(errorRow(repo, e, tab))

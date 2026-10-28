@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brandonapol/lasso/internal/adapter"
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/config"
 )
@@ -29,13 +30,19 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// testOptions keeps the daemon away from the real machine: no keys from
+// the environment, no ~/.config/lasso, and no adapters built from config
+// (which would read the real ~/.claude and ~/.grok).
 func testOptions(t *testing.T, port int) Options {
 	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
 	return Options{
 		Port:      port,
 		TokenPath: filepath.Join(dir, "config", "token"),
 		StateDir:  filepath.Join(dir, "state"),
 		Source:    api.NewFakeSource(),
+		Env:       func(string) string { return "" },
+		Adapters:  []adapter.Adapter{},
 	}
 }
 
