@@ -43,6 +43,7 @@ func AuditFile(stateDir string) string { return filepath.Join(stateDir, "audit.j
 type backend struct {
 	src     *source.Source
 	actions *actions
+	repos   []string // configured hot repos, for the web view's header
 	stop    func()
 }
 
@@ -185,7 +186,7 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 		}()
 	}
 	watch(pctx, adapters, src, logf)
-	return &backend{src: src, actions: acts, stop: func() {
+	return &backend{src: src, actions: acts, repos: cfg.HotRepos, stop: func() {
 		cancel()
 		wg.Wait()
 		// Close the relay session and leader connections; held messages
@@ -277,13 +278,14 @@ func Run(ctx context.Context, opts Options) error {
 	}()
 
 	src, acts := opts.Source, opts.Actions
+	var hotRepos []string
 	if src == nil {
 		b, err := startBackend(ctx, opts)
 		if err != nil {
 			return fmt.Errorf("lasso serve: %w", err)
 		}
 		defer b.stop()
-		src, acts = b.src, b.actions
+		src, acts, hotRepos = b.src, b.actions, b.repos
 	}
 	agentToken := opts.AgentToken
 	if agentToken == "" {
@@ -303,6 +305,7 @@ func Run(ctx context.Context, opts Options) error {
 	srv := &http.Server{
 		Handler: api.Handler(src, api.Options{
 			Token: token, AgentToken: agentToken, Port: addr.Port, Actions: acts, Chat: chat, Hub: hub,
+			HotRepos: hotRepos,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Request contexts end with ctx, so open event streams close on
