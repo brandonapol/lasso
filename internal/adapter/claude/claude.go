@@ -382,9 +382,9 @@ func promptEvent(session string, o *openTool, asking bool, fallback time.Time) a
 	ev := adapter.Event{ID: "prompt:" + o.id, Bot: Kind, Session: session, At: at}
 	if asking {
 		ev.Kind = attention.KindBotQuestion
-		ev.Text = adapter.Untrusted(attention.Plain(o.question))
+		ev.Text = adapter.Untrusted(attention.Gloss(o.question))
 		for i, l := range o.options {
-			ev.Options = append(ev.Options, adapter.Option{N: i + 1, Label: adapter.Untrusted(attention.Plain(l))})
+			ev.Options = append(ev.Options, adapter.Option{N: i + 1, Label: adapter.Untrusted(attention.Gloss(l))})
 		}
 		return ev
 	}
@@ -393,7 +393,7 @@ func promptEvent(session string, o *openTool, asking bool, fallback time.Time) a
 	if o.detail != "" {
 		text += ": " + o.detail
 	}
-	ev.Text = adapter.Untrusted(attention.Plain(text))
+	ev.Text = adapter.Untrusted(attention.Gloss(text))
 	return ev
 }
 
