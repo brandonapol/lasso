@@ -483,3 +483,13 @@ func (a *Adapter) isBusy(id string) bool {
 	defer a.mu.Unlock()
 	return a.busy[id]
 }
+
+// Cwd is the folder session id works in, if it is on disk. The daemon
+// uses it to tell which repo a session works in.
+func (a *Adapter) Cwd(id string) (string, bool) {
+	s, ok := a.find(id)
+	if !ok || s.Cwd == "" {
+		return "", false
+	}
+	return s.Cwd, true
+}

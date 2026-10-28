@@ -15,18 +15,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/brandonapol/lasso/internal/adapter"
-	"github.com/brandonapol/lasso/internal/adapter/saddle"
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/audit"
 	"github.com/brandonapol/lasso/internal/config"
+	"github.com/brandonapol/lasso/internal/digest"
 	"github.com/brandonapol/lasso/internal/github"
+	"github.com/brandonapol/lasso/internal/jev"
+	"github.com/brandonapol/lasso/internal/llm"
 	"github.com/brandonapol/lasso/internal/rules"
 	"github.com/brandonapol/lasso/internal/source"
 	"github.com/brandonapol/lasso/internal/store"
+	"github.com/brandonapol/lasso/internal/summary"
 )
 
 // DBFile is the daemon's database in stateDir.
@@ -34,10 +38,6 @@ func DBFile(stateDir string) string { return filepath.Join(stateDir, "lasso.db")
 
 // AuditFile is the audit log in stateDir.
 func AuditFile(stateDir string) string { return filepath.Join(stateDir, "audit.jsonl") }
-
-// saddleReachable is what the saddle adapter reports when it can reach
-// saddle again after trouble; the source takes "" for that.
-const saddleReachable = "saddle is reachable again"
 
 // backend is the real source and actions, and how to stop them.
 type backend struct {
@@ -78,6 +78,10 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	if logf == nil {
 		logf = log.Printf
 	}
+	env := opts.Env
+	if env == nil {
+		env = os.Getenv
+	}
 	st, err := store.Open(DBFile(opts.StateDir))
 	if err != nil {
 		return nil, err
@@ -87,18 +91,50 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	// them; reports only come from its polling, which starts below.
 	var src *source.Source
 	adapters := opts.Adapters
-	if adapters == nil && cfg.Adapters.Saddle.TokenFile != "" {
-		adapters = append(adapters, saddle.New(cfg.Adapters.Saddle, saddle.Options{Report: func(msg string) {
-			if msg == saddleReachable {
-				msg = ""
-			}
-			src.Report(saddle.Kind, msg)
-		}}))
+	if adapters == nil {
+		adapters = buildAdapters(cfg, env, func(kind, msg string) { src.Report(kind, reachable(msg)) })
 	}
 	byKind := map[string]adapter.Adapter{}
 	for _, a := range adapters {
 		byKind[a.Kind()] = a
 	}
+
+	// The models: Haiku for the digest and sorting, Sonnet for Summaries,
+	// Jev to cut first. Each is off without its key; keyNotice says so.
+	keyDir := cfgDir
+	if dirErr != nil {
+		keyDir = ""
+	}
+	key, keyErr := llm.LoadKey(env, keyDir)
+	var haiku, sonnet *llm.Client
+	if keyErr == nil {
+		if haiku, err = llm.New(llm.Options{
+			Key: key, Model: llm.Haiku, BaseURL: opts.AnthropicURL, DailyUSD: cfg.Models.HaikuDailyUSD,
+			Spend: llm.StoreSpend{S: st, Feature: featureDigest},
+		}); err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+		if sonnet, err = llm.New(llm.Options{
+			Key: key, Model: llm.Sonnet, BaseURL: opts.AnthropicURL, DailyUSD: cfg.Models.SonnetDailyUSD,
+			Spend: llm.StoreSpend{S: st, Feature: featureSummary},
+		}); err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+	}
+	jc := jev.New(cfg.Jev, env, jev.StoreSpend{S: st})
+	dg := digest.New(digest.Options{LLM: haiku, Jev: jc})
+	fetch := opts.SummaryFetch
+	if fetch == nil {
+		fetch = summary.GH{Runner: runner, Cache: st}
+	}
+	sums := summary.New(summary.Options{
+		Fetch: fetch, Cache: st, LLM: sonnet, Jev: jc,
+		Briefs: func(repo string, since time.Time) []string { return src.Briefs(repo, since) },
+	})
+	notices := keyNotice(st, keyErr, jc == nil && !cfg.Jev.Disabled, keyDir, time.Now())
+	repos := newRepoFinder(byKind, opts.gitRemote)
 
 	suggest := func(now time.Time) ([]rules.Suggestion, error) {
 		as, err := st.Answers(now.Add(-rules.SuggestWindow))
@@ -118,21 +154,32 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	src = source.New(source.Options{
 		Repos: cfg.HotRepos, Runner: runner, Cache: st, Cursors: st,
 		ConfigPath: cfgPath, Logf: logf, Adapters: adapters, Suggest: suggest,
+		Sorter: dg, Digest: dg, Summaries: sums, SessionRepo: repos.find, Notices: notices,
 	})
 	acts := &actions{
 		eng:      rules.NewEngine(rulesPath, audit.Open(AuditFile(opts.StateDir)), executor{adapters: byKind}, time.Now),
 		adapters: byKind, answers: st, resolve: src.Resolve, wake: src.Wake, now: time.Now, logf: logf,
+		summaries: sums, repos: cfg.HotRepos,
 	}
 
 	pctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer close(done)
+		defer wg.Done()
 		_ = src.Run(pctx)
 	}()
+	if len(cfg.HotRepos) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			summaryLoop(pctx, sums, cfg.HotRepos, src.Wake, logf)
+		}()
+	}
+	watch(pctx, adapters, src, logf)
 	return &backend{src: src, actions: acts, stop: func() {
 		cancel()
-		<-done
+		wg.Wait()
 		_ = st.Close()
 	}}, nil
 }
@@ -158,8 +205,9 @@ type Options struct {
 	// RulesPath and StateDir/audit.jsonl, sending through the adapters.
 	Actions api.Actions
 	// Adapters are the bot adapters for the real source and actions; nil
-	// builds them from Config (saddle, once [adapters.saddle] token_file
-	// is set).
+	// builds them from Config: saddle once [adapters.saddle] token_file
+	// is set, Claude Code and grok when their directories exist (or
+	// [adapters.claude] / [adapters.grok] enabled says so).
 	Adapters []adapter.Adapter
 	// RulesPath is rules.toml; empty is config.Dir()/rules.toml.
 	RulesPath string
@@ -168,6 +216,14 @@ type Options struct {
 	AgentToken string
 	// Logf gets the real source's log lines; nil logs to stderr.
 	Logf func(format string, args ...any)
+	// Env reads the environment (API keys, GROK_HOME); nil is os.Getenv.
+	Env func(string) string
+	// AnthropicURL is the Messages API's base URL; empty is Anthropic's.
+	AnthropicURL string
+	// SummaryFetch reads a repo's last 24 hours for Summaries; nil is gh.
+	SummaryFetch summary.Fetcher
+	// gitRemote reads a directory's origin URL; nil runs git (tests).
+	gitRemote func(dir string) (string, error)
 	// Ready, if set, is called with the bound address once listening.
 	Ready func(addr *net.TCPAddr)
 }

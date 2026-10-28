@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -108,6 +109,18 @@ func (s *Source) Wake() {
 	}
 }
 
+// WakeBots makes Run read the bot adapters now rather than at the next
+// BotsEvery (a transcript changed). Safe from any goroutine.
+func (s *Source) WakeBots() {
+	s.botsDue.Store(true)
+	s.Wake()
+}
+
+// waitsOnUser reports whether an event is the bot stopping for the user.
+func waitsOnUser(e adapter.Event) bool {
+	return e.Kind == attention.KindPermissionPrompt || e.Kind == attention.KindBotQuestion
+}
+
 // pollBots reads every adapter's sessions and new events. An adapter that
 // can't be read keeps its last state, so a bot going quiet for a minute
 // doesn't drop the asks it has waiting.
@@ -127,6 +140,9 @@ func (s *Source) pollBots(ctx context.Context) {
 			evs, cur, err = a.Events(ctx, since)
 		}
 		s.settleBot(kind, err)
+		if err == nil {
+			s.learnRepos(kind, sess)
+		}
 		s.botMu.Lock()
 		if s.problems[kind].text() != "" {
 			s.botMu.Unlock()
@@ -135,13 +151,39 @@ func (s *Source) pollBots(ctx context.Context) {
 		s.cursors[kind] = cur
 		s.sessions[kind] = sess
 		fresh := map[string]bool{}
-		for _, e := range evs {
+		for i := range evs {
+			evs[i].Bot = kind
+			e := evs[i]
+			if s.opts.Digest != nil && !waitsOnUser(e) {
+				continue // the digest speaks for it
+			}
 			id := botEventID(kind, e.ID)
-			e.Bot = kind
 			s.events[id] = e
 			fresh[id] = true
 		}
+		s.queueDigest(evs)
 		s.pruneEvents(kind, sess, fresh)
+		s.botMu.Unlock()
+	}
+}
+
+// learnRepos asks SessionRepo about sessions it hasn't seen. s.botMu must
+// not be held: it may run git.
+func (s *Source) learnRepos(kind string, sess []adapter.Session) {
+	if s.opts.SessionRepo == nil {
+		return
+	}
+	for _, se := range sess {
+		key := repoKey(kind, se.ID)
+		s.botMu.Lock()
+		repo, known := s.sessionRepo[key]
+		s.botMu.Unlock()
+		if known && (repo != "" || se.PR == "") {
+			continue
+		}
+		repo = s.opts.SessionRepo(kind, se)
+		s.botMu.Lock()
+		s.sessionRepo[key] = repo
 		s.botMu.Unlock()
 	}
 }
@@ -204,12 +246,14 @@ func (s *Source) botItems(ctx context.Context) []attention.Item {
 	for k, p := range s.problems {
 		problems[k] = p
 	}
+	repos := maps.Clone(s.sessionRepo)
 	s.botMu.Unlock()
 
 	var items []attention.Item
 	for _, e := range evs {
 		it := e.Item()
 		it.ID = botEventID(e.Bot, e.ID)
+		it.Repo = repos[repoKey(e.Bot, e.Session)]
 		it.Level = s.level(ctx, it)
 		if it.Level == attention.Ask {
 			it.Card = decisionCard(e, attention.Classify(ctx, it, nil).Why)
@@ -294,6 +338,7 @@ func askFocus(it attention.Item, e adapter.Event, isBot bool) api.Focus {
 
 // botRows lays out the sessions and adapter problems on In progress.
 func (s *Source) botRows(add func(row)) {
+	counts := s.sessionCounts()
 	s.botMu.Lock()
 	defer s.botMu.Unlock()
 	for kind, p := range s.problems {
@@ -323,8 +368,17 @@ func (s *Source) botRows(add func(row)) {
 				send = "no: lasso can only read this one"
 			}
 			fields = append(fields, api.Field{Name: "Can lasso send to it", Value: send})
+			status := sessionStatus(se.State)
+			if c, ok := counts[se.ID]; ok {
+				status += " · " + c.String()
+				fields = append(fields, api.Field{Name: "Messages → points", Value: c.String() + " (what the digest kept to tell you)"})
+			}
+			repo := s.sessionRepo[repoKey(kind, se.ID)]
+			if repo != "" {
+				fields = append(fields, api.Field{Name: "Repo", Value: repo})
+			}
 			add(row{group: 3, seq: seq, Focus: api.Focus{
-				Item:   api.Item{ID: sessionID(kind, se.ID), Tab: api.TabDoing, Title: se.Title, Status: sessionStatus(se.State)},
+				Item:   api.Item{ID: sessionID(kind, se.ID), Tab: api.TabDoing, Repo: repo, Title: se.Title, Status: status},
 				Fields: fields,
 			}})
 		}

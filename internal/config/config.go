@@ -30,6 +30,49 @@ type Config struct {
 // Adapters configures the bot adapters (ADR 0001 §4).
 type Adapters struct {
 	Saddle Saddle `toml:"saddle"`
+	Claude Local  `toml:"claude"`
+	Grok   Local  `toml:"grok"`
+}
+
+// Local is an adapter that reads a bot's own files on this machine
+// (Claude Code's transcripts, grok's sessions).
+type Local struct {
+	// Enabled turns the adapter on or off. Unset means on when Dir exists.
+	Enabled *bool `toml:"enabled"`
+	// Dir is where the bot keeps its sessions. Empty is the bot's default:
+	// ~/.claude/projects for Claude Code, $GROK_HOME or ~/.grok for grok.
+	// A leading ~/ is the home directory.
+	Dir string `toml:"dir"`
+}
+
+// ClaudeDir is Claude Code's default projects directory under home.
+func ClaudeDir(home string) string { return filepath.Join(home, ".claude", "projects") }
+
+// GrokDir is grok's default home: GROK_HOME (read through env), else
+// ~/.grok.
+func GrokDir(home string, env func(string) string) string {
+	if d := env("GROK_HOME"); d != "" {
+		return d
+	}
+	return filepath.Join(home, ".grok")
+}
+
+// Resolve says where the adapter reads (Dir, else def, with ~/ expanded)
+// and whether it is on: Enabled when set, else whether that directory
+// exists.
+func (l Local) Resolve(home, def string) (dir string, on bool) {
+	dir = l.Dir
+	if dir == "" {
+		dir = def
+	}
+	if rest, ok := strings.CutPrefix(dir, "~/"); ok && home != "" {
+		dir = filepath.Join(home, rest)
+	}
+	if l.Enabled != nil {
+		return dir, *l.Enabled
+	}
+	fi, err := os.Stat(dir)
+	return dir, err == nil && fi.IsDir()
 }
 
 // Saddle is how lasso reaches `saddle remote`.
