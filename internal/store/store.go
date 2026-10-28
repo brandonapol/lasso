@@ -40,6 +40,12 @@ var migrations = []string{
 		value BLOB NOT NULL,
 		expires_at INTEGER NOT NULL
 	);`,
+	`CREATE TABLE spend (
+		feature TEXT NOT NULL,
+		day TEXT NOT NULL,
+		usd REAL NOT NULL,
+		PRIMARY KEY (feature, day)
+	);`,
 }
 
 // Open opens (creating if needed) the database at path and migrates it.
@@ -130,5 +136,23 @@ func (s *Store) CachePut(key string, value []byte, now time.Time, ttl time.Durat
 	_, err := s.DB.Exec(`INSERT INTO cache (key, value, expires_at) VALUES (?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
 		key, value, now.Add(ttl).Unix())
+	return err
+}
+
+// Spent is what feature has spent on day (YYYY-MM-DD), in US dollars.
+func (s *Store) Spent(feature, day string) (float64, error) {
+	var usd float64
+	err := s.DB.QueryRow(`SELECT usd FROM spend WHERE feature = ? AND day = ?`, feature, day).Scan(&usd)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return usd, err
+}
+
+// AddSpend adds usd to what feature has spent on day.
+func (s *Store) AddSpend(feature, day string, usd float64) error {
+	_, err := s.DB.Exec(`INSERT INTO spend (feature, day, usd) VALUES (?, ?, ?)
+		ON CONFLICT(feature, day) DO UPDATE SET usd = usd + excluded.usd`,
+		feature, day, usd)
 	return err
 }
