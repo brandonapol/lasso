@@ -4,6 +4,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -16,9 +18,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brandonapol/lasso/internal/adapter"
+	"github.com/brandonapol/lasso/internal/adapter/saddle"
 	"github.com/brandonapol/lasso/internal/api"
+	"github.com/brandonapol/lasso/internal/audit"
 	"github.com/brandonapol/lasso/internal/config"
 	"github.com/brandonapol/lasso/internal/github"
+	"github.com/brandonapol/lasso/internal/rules"
 	"github.com/brandonapol/lasso/internal/source"
 	"github.com/brandonapol/lasso/internal/store"
 )
@@ -26,20 +32,43 @@ import (
 // DBFile is the daemon's database in stateDir.
 func DBFile(stateDir string) string { return filepath.Join(stateDir, "lasso.db") }
 
-// startSource opens the store and starts the real source polling. The
-// returned func stops polling and closes the store.
-func startSource(ctx context.Context, opts Options) (*source.Source, func(), error) {
+// AuditFile is the audit log in stateDir.
+func AuditFile(stateDir string) string { return filepath.Join(stateDir, "audit.jsonl") }
+
+// saddleReachable is what the saddle adapter reports when it can reach
+// saddle again after trouble; the source takes "" for that.
+const saddleReachable = "saddle is reachable again"
+
+// backend is the real source and actions, and how to stop them.
+type backend struct {
+	src     *source.Source
+	actions *actions
+	stop    func()
+}
+
+// startBackend opens the store, builds the bot adapters, the source and
+// the rules engine, and starts the source polling. stop ends polling and
+// closes the store.
+func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	cfg := opts.Config
 	if cfg == nil {
 		c, err := config.Load()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		cfg = &c
 	}
+	cfgDir, dirErr := config.Dir()
 	cfgPath := "~/.config/lasso/config.toml"
-	if dir, err := config.Dir(); err == nil {
-		cfgPath = filepath.Join(dir, "config.toml")
+	if dirErr == nil {
+		cfgPath = filepath.Join(cfgDir, "config.toml")
+	}
+	rulesPath := opts.RulesPath
+	if rulesPath == "" {
+		if dirErr != nil {
+			return nil, dirErr
+		}
+		rulesPath = filepath.Join(cfgDir, "rules.toml")
 	}
 	runner := opts.Runner
 	if runner == nil {
@@ -51,23 +80,61 @@ func startSource(ctx context.Context, opts Options) (*source.Source, func(), err
 	}
 	st, err := store.Open(DBFile(opts.StateDir))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	src := source.New(source.Options{
+
+	// The adapters report trouble to the source, which is built after
+	// them; reports only come from its polling, which starts below.
+	var src *source.Source
+	adapters := opts.Adapters
+	if adapters == nil && cfg.Adapters.Saddle.TokenFile != "" {
+		adapters = append(adapters, saddle.New(cfg.Adapters.Saddle, saddle.Options{Report: func(msg string) {
+			if msg == saddleReachable {
+				msg = ""
+			}
+			src.Report(saddle.Kind, msg)
+		}}))
+	}
+	byKind := map[string]adapter.Adapter{}
+	for _, a := range adapters {
+		byKind[a.Kind()] = a
+	}
+
+	suggest := func(now time.Time) ([]rules.Suggestion, error) {
+		as, err := st.Answers(now.Add(-rules.SuggestWindow))
+		if err != nil {
+			return nil, err
+		}
+		f, err := rules.LoadFile(rulesPath)
+		if err != nil {
+			return nil, err
+		}
+		answers := make([]rules.Answer, len(as))
+		for i, a := range as {
+			answers[i] = rules.Answer{Bot: a.Bot, Action: rules.Action(a.Action), Choice: a.Choice, Repo: a.Repo, At: a.At}
+		}
+		return rules.Suggest(answers, f, now), nil
+	}
+	src = source.New(source.Options{
 		Repos: cfg.HotRepos, Runner: runner, Cache: st, Cursors: st,
-		ConfigPath: cfgPath, Logf: logf,
+		ConfigPath: cfgPath, Logf: logf, Adapters: adapters, Suggest: suggest,
 	})
+	acts := &actions{
+		eng:      rules.NewEngine(rulesPath, audit.Open(AuditFile(opts.StateDir)), executor{adapters: byKind}, time.Now),
+		adapters: byKind, answers: st, resolve: src.Resolve, wake: src.Wake, now: time.Now, logf: logf,
+	}
+
 	pctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = src.Run(pctx)
 	}()
-	return src, func() {
+	return &backend{src: src, actions: acts, stop: func() {
 		cancel()
 		<-done
 		_ = st.Close()
-	}, nil
+	}}, nil
 }
 
 // Options configures Run.
@@ -86,6 +153,19 @@ type Options struct {
 	Config *config.Config
 	// Runner starts gh for the real source; nil is the real gh.
 	Runner github.Runner
+	// Actions runs POST /actions when Source is set; nil answers 501. When
+	// Source is nil, Run builds the real one: the rules engine over
+	// RulesPath and StateDir/audit.jsonl, sending through the adapters.
+	Actions api.Actions
+	// Adapters are the bot adapters for the real source and actions; nil
+	// builds them from Config (saddle, once [adapters.saddle] token_file
+	// is set).
+	Adapters []adapter.Adapter
+	// RulesPath is rules.toml; empty is config.Dir()/rules.toml.
+	RulesPath string
+	// AgentToken is the agent pane's API token; empty makes a random one.
+	// It is never written to disk.
+	AgentToken string
 	// Logf gets the real source's log lines; nil logs to stderr.
 	Logf func(format string, args ...any)
 	// Ready, if set, is called with the bound address once listening.
@@ -128,18 +208,26 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	src := opts.Source
+	src, acts := opts.Source, opts.Actions
 	if src == nil {
-		live, stopSource, err := startSource(ctx, opts)
+		b, err := startBackend(ctx, opts)
 		if err != nil {
 			return fmt.Errorf("lasso serve: %w", err)
 		}
-		defer stopSource()
-		src = live
+		defer b.stop()
+		src, acts = b.src, b.actions
+	}
+	agentToken := opts.AgentToken
+	if agentToken == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return fmt.Errorf("lasso serve: %w", err)
+		}
+		agentToken = hex.EncodeToString(buf)
 	}
 
 	srv := &http.Server{
-		Handler:           api.Handler(src, api.Options{Token: token, Port: addr.Port}),
+		Handler:           api.Handler(src, api.Options{Token: token, AgentToken: agentToken, Port: addr.Port, Actions: acts}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Request contexts end with ctx, so open event streams close on
 		// shutdown instead of holding it up.

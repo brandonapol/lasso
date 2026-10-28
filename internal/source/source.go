@@ -16,9 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brandonapol/lasso/internal/adapter"
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/attention"
 	"github.com/brandonapol/lasso/internal/github"
+	"github.com/brandonapol/lasso/internal/rules"
 )
 
 // Options configures New.
@@ -40,6 +42,13 @@ type Options struct {
 	ConfigPath string
 	// Logf, if set, gets one line each time a repo starts or stops failing.
 	Logf func(format string, args ...any)
+	// Adapters are the bot adapters read every BotsEvery: their sessions
+	// go on In progress, and what they wait on the user for becomes an ask.
+	// Wire each adapter's trouble reports to Report.
+	Adapters []adapter.Adapter
+	// Suggest, if set, returns the rules lasso offers to add (from the
+	// user's recent answers). Each one is a brief item on Summaries.
+	Suggest func(now time.Time) ([]rules.Suggestion, error)
 }
 
 // subBuffer is how many events a subscriber may fall behind before it is
@@ -60,6 +69,21 @@ type Source struct {
 	branches map[string]string    // repo -> default branch, once known
 	login    string               // the gh user, once known
 	levels   map[string]levelMemo // by attention item id
+
+	// Suggestions, owned by the polling goroutine.
+	suggested  map[string]rules.Suggestion // by id, as first offered
+	suggestErr string
+	lastBots   time.Time
+
+	// Bot state: written by the polling goroutine, and by Report and
+	// Resolve from any goroutine.
+	botMu    sync.Mutex
+	sessions map[string][]adapter.Session // by adapter kind
+	events   map[string]adapter.Event     // by item id
+	cursors  map[string]adapter.Cursor    // by adapter kind
+	problems map[string]botProblem        // by adapter kind
+
+	wake chan struct{}
 
 	mu    sync.Mutex
 	rows  map[string]row
@@ -103,17 +127,23 @@ func New(opts Options) *Source {
 		opts.ConfigPath = "~/.config/lasso/config.toml"
 	}
 	s := &Source{
-		opts:     opts,
-		pollers:  map[string]*github.Poller{},
-		called:   map[string]bool{},
-		issues:   map[string]github.Issue{},
-		prs:      map[string]github.PR{},
-		runs:     map[string]github.Run{},
-		errs:     map[string]repoError{},
-		branches: map[string]string{},
-		levels:   map[string]levelMemo{},
-		rows:     map[string]row{},
-		subs:     map[chan api.Event]struct{}{},
+		opts:      opts,
+		pollers:   map[string]*github.Poller{},
+		called:    map[string]bool{},
+		issues:    map[string]github.Issue{},
+		prs:       map[string]github.PR{},
+		runs:      map[string]github.Run{},
+		errs:      map[string]repoError{},
+		branches:  map[string]string{},
+		levels:    map[string]levelMemo{},
+		suggested: map[string]rules.Suggestion{},
+		sessions:  map[string][]adapter.Session{},
+		events:    map[string]adapter.Event{},
+		cursors:   map[string]adapter.Cursor{},
+		problems:  map[string]botProblem{},
+		wake:      make(chan struct{}, 1),
+		rows:      map[string]row{},
+		subs:      map[chan api.Event]struct{}{},
 	}
 	// One poller per repo, so each poll's error belongs to one repo.
 	for _, repo := range opts.Repos {
@@ -123,27 +153,37 @@ func New(opts Options) *Source {
 	return s
 }
 
-// Run polls until ctx ends. With no hot repos it just waits.
+// Run polls until ctx ends. Wake makes it refresh early.
 func (s *Source) Run(ctx context.Context) error {
-	if len(s.opts.Repos) == 0 {
-		<-ctx.Done()
-		return ctx.Err()
-	}
 	for {
 		next := s.Step(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		wait := max(next.Sub(s.opts.Clock.Now()), time.Second)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-s.opts.Clock.After(wait):
+		case <-s.wake:
 		}
 	}
 }
 
-// Step polls whatever is due in every hot repo, refreshes the rows and
-// returns when something is next due.
+// Step polls whatever is due in every hot repo and bot adapter, refreshes
+// the rows and returns when something is next due.
 func (s *Source) Step(ctx context.Context) time.Time {
-	var soonest time.Time
+	now := s.opts.Clock.Now()
+	soonest := now.Add(RefreshEvery)
+	if len(s.opts.Adapters) > 0 {
+		if s.lastBots.IsZero() || !now.Before(s.lastBots.Add(BotsEvery)) {
+			s.pollBots(ctx)
+			s.lastBots = now
+		}
+		if next := s.lastBots.Add(BotsEvery); next.Before(soonest) {
+			soonest = next
+		}
+	}
 	for _, repo := range s.opts.Repos {
 		if ctx.Err() != nil {
 			break
@@ -154,11 +194,13 @@ func (s *Source) Step(ctx context.Context) time.Time {
 		if ctx.Err() == nil {
 			s.settle(repo, s.called, err)
 		}
-		if soonest.IsZero() || next.Before(soonest) {
+		if next.Before(soonest) {
 			soonest = next
 		}
 	}
-	s.lookupLogin(ctx)
+	if len(s.opts.Repos) > 0 {
+		s.lookupLogin(ctx)
+	}
 	s.refresh(ctx)
 	return soonest
 }
@@ -226,7 +268,9 @@ func (s *Source) logf(format string, args ...any) {
 func (s *Source) refresh(ctx context.Context) {
 	now := s.opts.Clock.Now()
 	items := s.attentionItems(ctx)
-	rows := s.buildRows(items, now)
+	sugItems, sugs := s.suggestionItems(now)
+	items = append(items, sugItems...)
+	rows := s.buildRows(items, now, sugs)
 
 	var cursor time.Time
 	if s.opts.Cursors != nil {
