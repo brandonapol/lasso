@@ -358,6 +358,35 @@ func askFocus(it attention.Item, e adapter.Event, isBot bool) api.Focus {
 	return f
 }
 
+// The focus fields that say what answering an ask would do. The assistant
+// reads them back and puts them on its answer, so the always-ask list
+// applies to answers too.
+const (
+	fieldEffects = "Effects" // comma-separated rules.Effect values
+	fieldPaths   = "Paths"   // comma-separated repo-relative files
+)
+
+// askFacts are the Effects and Paths fields for a bot's prompt, from
+// PromptFacts. A prompt lasso can't answer has none.
+func (s *Source) askFacts(e adapter.Event) []api.Field {
+	if s.opts.PromptFacts == nil || e.PromptID == "" {
+		return nil
+	}
+	effects, paths := s.opts.PromptFacts(e.Bot, e.PromptID)
+	var out []api.Field
+	if len(effects) > 0 {
+		es := make([]string, len(effects))
+		for i, x := range effects {
+			es[i] = string(x)
+		}
+		out = append(out, api.Field{Name: fieldEffects, Value: strings.Join(es, ", ")})
+	}
+	if len(paths) > 0 {
+		out = append(out, api.Field{Name: fieldPaths, Value: strings.Join(paths, ", ")})
+	}
+	return out
+}
+
 // quote marks every line of a bot's words as a quotation.
 func quote(text string) string {
 	lines := strings.Split(text, "\n")

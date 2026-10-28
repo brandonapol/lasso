@@ -154,7 +154,7 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	src = source.New(source.Options{
 		Repos: cfg.HotRepos, Runner: runner, Cache: st, Cursors: st,
 		ConfigPath: cfgPath, Logf: logf, Adapters: adapters, Suggest: suggest,
-		Sorter: dg, Digest: dg, Summaries: sums, SessionRepo: repos.find, Notices: notices,
+		Sorter: dg, Digest: dg, Summaries: sums, SessionRepo: repos.find, PromptFacts: askFacts(byKind), Notices: notices,
 	})
 	acts := &actions{
 		eng:      rules.NewEngine(rulesPath, audit.Open(AuditFile(opts.StateDir)), executor{adapters: byKind}, time.Now),

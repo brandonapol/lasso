@@ -139,13 +139,35 @@ func (f *repoFinder) find(kind string, se adapter.Session) string {
 	if seen {
 		return r
 	}
-	if url, err := f.remote(dir); err == nil {
+	// A session's folder may be gone: saddle removes a task's worktree
+	// (<repo>/.saddle/worktrees/<task>) once it lands, and grok keeps the
+	// session. Ask git in the nearest folder that is still there, which
+	// for a worktree is inside the repo it came from.
+	url, err := f.remote(dir)
+	if up := existing(dir); err != nil && up != dir {
+		url, err = f.remote(up)
+	}
+	if err == nil {
 		r = githubRepo(url)
 	}
 	f.mu.Lock()
 	f.byDir[dir] = r
 	f.mu.Unlock()
 	return r
+}
+
+// existing is dir, or its nearest parent that exists when dir doesn't.
+func existing(dir string) string {
+	for d := filepath.Clean(dir); ; {
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			return d
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			return dir
+		}
+		d = up
+	}
 }
 
 // gitRemote is dir's origin URL.

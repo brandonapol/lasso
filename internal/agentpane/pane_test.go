@@ -250,7 +250,7 @@ func TestNoRuleRefusesAndNothingRuns(t *testing.T) {
 	)
 	r.send("tell scout to stop")
 	res := r.model.lastToolResult(t)
-	if !res.IsError || !strings.Contains(res.Content, "No rule lets grok-scout post comments.") {
+	if !res.IsError || !strings.Contains(res.Content, "No rule lets grok-scout send messages to bot sessions.") {
 		t.Fatalf("tool result = %+v", res)
 	}
 	if len(r.exec.steps) != 0 {

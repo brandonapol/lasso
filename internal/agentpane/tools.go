@@ -45,7 +45,7 @@ var tools = []llm.Tool{
 	},
 	{
 		Name:        toolSend,
-		Description: "Send a message to a bot session. It goes through the user's rules; if it is refused, ask the user instead.",
+		Description: "Send a message to a bot session, as lasso passing on what the user wants said. It goes through the user's rules (a send_message rule); if it is refused, ask the user instead.",
 		InputSchema: schema(`{"type":"object","properties":{"session":{"type":"string","description":"the session's item id from the doing tab, like session:saddle:abc"},"text":{"type":"string"}},"required":["session","text"]}`),
 	},
 	{
@@ -59,7 +59,7 @@ var tools = []llm.Tool{
 		InputSchema: schema(`{"type":"object","properties":{
 "text":{"type":"string","description":"the user's words"},
 "who":{"type":"string","description":"bot name or glob, like grok-*"},
-"action":{"type":"string","enum":["file_issue","ci_retry","fix_small","answer_prompt","comment","label"]},
+"action":{"type":"string","enum":["file_issue","ci_retry","fix_small","answer_prompt","comment","label","send_message"]},
 "repos":{"type":"array","items":{"type":"string"}},
 "labels":{"type":"array","items":{"type":"string"}},
 "paths":{"type":"array","items":{"type":"string"}},
@@ -212,8 +212,14 @@ func (p *Pane) sendToBot(ctx context.Context, session, text string) (string, err
 	if text == "" {
 		return "", fmt.Errorf("there's nothing to send")
 	}
+	// The session's repo, as lasso worked it out, so a rule limited to
+	// some repos can match. A session not on the tab yet just has none.
+	var repo string
+	if f, err := p.api.focus(ctx, session); err == nil {
+		repo = f.Repo
+	}
 	out, err := p.api.act(ctx, rules.Request{
-		Bot: botName(kind, id), Action: rules.Comment, Target: id,
+		Bot: botName(kind, id), Action: rules.SendMessage, Repo: repo, Target: id,
 		Args: map[string]string{"text": text},
 	})
 	if err != nil {

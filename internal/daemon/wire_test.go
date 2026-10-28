@@ -415,3 +415,47 @@ func TestReachable(t *testing.T) {
 		t.Fatal("reachable")
 	}
 }
+
+// cwdBot is a bot adapter that knows each session's folder.
+type cwdBot struct {
+	fakeBot
+	cwd map[string]string
+}
+
+func (c *cwdBot) Cwd(id string) (string, bool) { d, ok := c.cwd[id]; return d, ok }
+
+// A grok session that worked in a saddle worktree keeps its folder after
+// saddle removes the worktree. Its repo is still the one the worktree was
+// in: git is asked in the nearest folder that is still there.
+func TestSessionRepoOfARemovedWorktree(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".saddle", "worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(repo, ".saddle", "worktrees", "t7-landed")
+	var asked []string
+	remote := func(dir string) (string, error) {
+		asked = append(asked, dir)
+		if _, err := os.Stat(dir); err != nil {
+			return "", err // git -C a missing folder fails
+		}
+		if dir == repo || strings.HasPrefix(dir, repo+string(filepath.Separator)) {
+			return "git@github.com:o/r.git", nil
+		}
+		return "", errors.New("not a git repository")
+	}
+	bot := &cwdBot{cwd: map[string]string{"s1": gone, "s2": repo}}
+	f := newRepoFinder(map[string]adapter.Adapter{"fake": bot}, remote)
+	if got := f.find("fake", adapter.Session{ID: "s1"}); got != "o/r" {
+		t.Fatalf("removed worktree: repo %q (git asked in %q)", got, asked)
+	}
+	if want := []string{gone, filepath.Join(repo, ".saddle", "worktrees")}; !slices.Equal(asked, want) {
+		t.Fatalf("git asked in %q, want %q", asked, want)
+	}
+	if got := f.find("fake", adapter.Session{ID: "s2"}); got != "o/r" {
+		t.Fatalf("folder that's there: repo %q", got)
+	}
+	if got := f.find("fake", adapter.Session{ID: "nope"}); got != "" {
+		t.Fatalf("unknown session: repo %q", got)
+	}
+}
