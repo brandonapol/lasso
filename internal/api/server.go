@@ -20,8 +20,13 @@ const HealthBody = "lasso ok\n"
 
 // Options configures Handler.
 type Options struct {
-	// Token is the bearer token every request but /healthz must carry.
+	// Token is the user's bearer token. Every request but /healthz must
+	// carry it or AgentToken.
 	Token string
+	// AgentToken, if set, is the agent pane's token. Requests carrying it
+	// are CallerAgent: their actions always go through the rules, and they
+	// can't undo. Empty means the agent pane can't call the API.
+	AgentToken string
 	// Port is the listener's port; it fixes the one Origin allowed.
 	Port int
 	// KeepAlive is how often /events sends a comment line to keep the
@@ -34,8 +39,13 @@ type Options struct {
 
 // Actions is what POST /actions and POST /actions/{id}/undo call;
 // *rules.Engine implements it.
+//
+// Which method runs is decided by the caller's token, not the request:
+// the user's token runs DoAsUser (the user is the approval), anything else
+// runs Do (the rules decide). Only the user may Undo.
 type Actions interface {
 	Do(ctx context.Context, req rules.Request) (rules.Outcome, error)
+	DoAsUser(ctx context.Context, req rules.Request) (rules.Outcome, error)
 	Undo(ctx context.Context, id string) (rules.Outcome, error)
 }
 
@@ -110,10 +120,21 @@ func Handler(src Source, opts Options) http.Handler {
 				http.Error(w, "bad action: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			out, err := opts.Actions.Do(r.Context(), req)
+			var out rules.Outcome
+			var err error
+			if CallerFrom(r.Context()) == CallerUser {
+				out, err = opts.Actions.DoAsUser(r.Context(), req)
+			} else {
+				out, err = opts.Actions.Do(r.Context(), req)
+			}
 			writeOutcome(w, out, err)
 		})
 		mux.HandleFunc("POST /actions/{id}/undo", func(w http.ResponseWriter, r *http.Request) {
+			if CallerFrom(r.Context()) != CallerUser {
+				// An undo is recorded as the user's own decision.
+				writeOutcome(w, rules.Outcome{Decision: rules.Decision{Reason: "Only you can undo an action; the agent pane can ask you to."}}, rules.ErrRefused)
+				return
+			}
 			out, err := opts.Actions.Undo(r.Context(), r.PathValue("id"))
 			writeOutcome(w, out, err)
 		})
@@ -121,7 +142,8 @@ func Handler(src Source, opts Options) http.Handler {
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
 		serveEvents(w, r, src, opts.KeepAlive)
 	})
-	return guard(mux, opts.Token, opts.Port, map[string]bool{"/healthz": true})
+	tokens := map[Caller]string{CallerUser: opts.Token, CallerAgent: opts.AgentToken}
+	return guard(mux, tokens, opts.Port, map[string]bool{"/healthz": true})
 }
 
 // serveEvents streams src's changes as Server-Sent Events until the client

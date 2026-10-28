@@ -6,6 +6,7 @@ package api
 // rather than imports them because saddle's packages are internal.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -20,15 +21,44 @@ import (
 	"strings"
 )
 
+// Caller is who an authenticated request comes from, decided by which
+// token it carried, never by anything in its body.
+type Caller string
+
+// The callers.
+const (
+	// CallerNone: no token (only open paths like /healthz).
+	CallerNone Caller = ""
+	// CallerUser: the user's own token file, which the TUI reads and the
+	// web view gets through `lasso open`. What it asks for is the user's
+	// decision.
+	CallerUser Caller = "user"
+	// CallerAgent: the agent pane's token, which the daemon makes in memory
+	// and hands only to the agent pane. It can never act as the user.
+	CallerAgent Caller = "agent"
+)
+
+type callerKey struct{}
+
+// CallerFrom returns the caller guard authenticated for this request.
+func CallerFrom(ctx context.Context) Caller {
+	c, _ := ctx.Value(callerKey{}).(Caller)
+	return c
+}
+
 // guard refuses requests for a non-loopback Host (DNS rebinding) or from a
-// foreign Origin with 403, and requests without the token with 401. Paths
-// in open skip the token check but not the Host and Origin checks.
-func guard(next http.Handler, token string, port int, open map[string]bool) http.Handler {
+// foreign Origin with 403, and requests without a known token with 401.
+// Paths in open skip the token check but not the Host and Origin checks.
+// The token a request carried decides its Caller.
+func guard(next http.Handler, tokens map[Caller]string, port int, open map[string]bool) http.Handler {
 	origins := map[string]bool{
 		"http://127.0.0.1:" + strconv.Itoa(port): true,
 		"http://localhost:" + strconv.Itoa(port): true,
 	}
-	want := []byte(token)
+	if tokens[CallerUser] != "" && tokens[CallerUser] == tokens[CallerAgent] {
+		// One token for both would let the agent pass as the user.
+		delete(tokens, CallerAgent)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !loopbackHost(hostOnly(r.Host)) {
 			http.Error(w, "host not allowed", http.StatusForbidden)
@@ -39,15 +69,29 @@ func guard(next http.Handler, token string, port int, open map[string]bool) http
 			return
 		}
 		if !open[r.URL.Path] {
-			have := []byte(bearerToken(r))
-			if len(want) == 0 || subtle.ConstantTimeCompare(have, want) != 1 {
+			caller := authenticate([]byte(bearerToken(r)), tokens)
+			if caller == CallerNone {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="lasso"`)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			r = r.WithContext(context.WithValue(r.Context(), callerKey{}, caller))
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authenticate returns the caller whose token have is, comparing against
+// every token in constant time.
+func authenticate(have []byte, tokens map[Caller]string) Caller {
+	found := CallerNone
+	for _, c := range []Caller{CallerUser, CallerAgent} {
+		want := []byte(tokens[c])
+		if len(want) > 0 && subtle.ConstantTimeCompare(have, want) == 1 {
+			found = c
+		}
+	}
+	return found
 }
 
 func bearerToken(r *http.Request) string {

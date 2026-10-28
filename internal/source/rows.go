@@ -11,6 +11,7 @@ import (
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/attention"
 	"github.com/brandonapol/lasso/internal/github"
+	"github.com/brandonapol/lasso/internal/rules"
 )
 
 // BodyLimit is how many runes of an issue body the focus pane gets.
@@ -80,6 +81,7 @@ func (s *Source) attentionItems(ctx context.Context) []attention.Item {
 			Level: attention.Brief, Created: e.since,
 		})
 	}
+	items = append(items, s.botItems(ctx)...)
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	return items
 }
@@ -132,15 +134,16 @@ func runTime(r github.Run) time.Time {
 }
 
 // buildRows lays out every tab.
-func (s *Source) buildRows(items []attention.Item, now time.Time) map[string]row {
+func (s *Source) buildRows(items []attention.Item, now time.Time, sugs []rules.Suggestion) map[string]row {
 	rows := map[string]row{}
 	add := func(r row) { rows[r.ID] = r }
 	if len(s.opts.Repos) == 0 {
 		for _, tab := range api.Tabs {
 			add(s.setupRow(tab))
 		}
-		return rows
 	}
+	s.botRows(add)
+	suggestionRows(sugs, add)
 	for repo, e := range s.errs {
 		for _, tab := range []api.Tab{api.TabIssues, api.TabActions} {
 			add(errorRow(repo, e, tab))
@@ -160,10 +163,8 @@ func (s *Source) buildRows(items []attention.Item, now time.Time) map[string]row
 	for i, sh := range attention.InProgress(items, now) {
 		base, ok := rows[sh.Item.ID]
 		if !ok {
-			base = row{Focus: api.Focus{
-				Item: api.Item{ID: sh.Item.ID, Repo: sh.Item.Repo, Title: sh.Item.Title, Updated: sh.Item.Created},
-				Body: sh.Item.Summary,
-			}}
+			e, isBot := s.botEvent(sh.Item.ID)
+			base = row{Focus: askFocus(sh.Item, e, isBot)}
 		}
 		f := base.Focus
 		f.ID, f.Tab, f.Status = "doing:"+sh.Item.ID, api.TabDoing, "needs you"
