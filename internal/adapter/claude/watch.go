@@ -8,9 +8,10 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// Watch tails the transcripts: the channel gets a value soon after any of
-// them changes (several changes may come as one), so a poller can call
-// Events at once instead of on its next tick. It closes when ctx ends.
+// Watch tails the transcripts and Claude Code's session files: the
+// channel gets a value soon after any of them changes (several changes
+// may come as one), so a poller can call Events at once instead of on its
+// next tick. It closes when ctx ends.
 func (a *Adapter) Watch(ctx context.Context) (<-chan struct{}, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -26,6 +27,7 @@ func (a *Adapter) Watch(ctx context.Context) (<-chan struct{}, error) {
 			_ = w.Add(filepath.Join(a.opts.Root, e.Name())) // best effort: a limit hit means polling covers it
 		}
 	}
+	_ = w.Add(a.opts.SessionsDir) // busy/idle changes; best effort, as above
 	out := make(chan struct{}, 1)
 	go func() {
 		defer close(out)
@@ -43,7 +45,8 @@ func (a *Adapter) Watch(ctx context.Context) (<-chan struct{}, error) {
 						_ = w.Add(ev.Name) // a new project directory
 					}
 				}
-				if filepath.Ext(ev.Name) != ".jsonl" && filepath.Dir(ev.Name) != a.opts.Root {
+				status := filepath.Dir(ev.Name) == a.opts.SessionsDir && filepath.Ext(ev.Name) == ".json"
+				if !status && filepath.Ext(ev.Name) != ".jsonl" && filepath.Dir(ev.Name) != a.opts.Root {
 					continue
 				}
 				select {
