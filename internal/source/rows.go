@@ -169,6 +169,9 @@ func (s *Source) buildRows(items []attention.Item, now time.Time, sugs []rules.S
 		if !ok {
 			e, isBot := s.botEvent(sh.Item.ID)
 			base = row{Focus: askFocus(sh.Item, e, isBot)}
+			if isBot {
+				base.Fields = append(base.Fields, s.askFacts(e)...)
+			}
 		}
 		f := base.Focus
 		f.ID, f.Tab, f.Status, f.Right = "doing:"+sh.Item.ID, api.TabDoing, "needs you", "needs you"
