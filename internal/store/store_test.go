@@ -78,3 +78,21 @@ func TestNewerSchemaRefused(t *testing.T) {
 		t.Fatal("opened a newer schema")
 	}
 }
+
+func TestSpendAddsUpPerFeatureAndDay(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "lasso.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if usd, err := s.Spent("jev", "2026-10-27"); err != nil || usd != 0 {
+		t.Fatalf("empty spend = %v %v", usd, err)
+	}
+	s.AddSpend("jev", "2026-10-27", 0.25)
+	s.AddSpend("jev", "2026-10-27", 0.5)
+	s.AddSpend("jev", "2026-10-28", 1)
+	s.AddSpend("haiku", "2026-10-27", 2)
+	if usd, _ := s.Spent("jev", "2026-10-27"); usd != 0.75 {
+		t.Fatalf("jev spend = %v", usd)
+	}
+}
