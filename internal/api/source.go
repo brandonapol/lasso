@@ -40,7 +40,16 @@ type Item struct {
 // Focus is what the focus pane shows for one item.
 type Focus struct {
 	Item
-	Body string `json:"body,omitempty"`
+	// Fields are the item's facts in display order: a due date and where
+	// it came from, a run's failing step, a PR's review state.
+	Fields []Field `json:"fields,omitempty"`
+	Body   string  `json:"body,omitempty"`
+}
+
+// Field is one labelled fact in the focus pane.
+type Field struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // Event kinds pushed over GET /events.

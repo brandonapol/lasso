@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -16,7 +17,58 @@ import (
 	"time"
 
 	"github.com/brandonapol/lasso/internal/api"
+	"github.com/brandonapol/lasso/internal/config"
+	"github.com/brandonapol/lasso/internal/github"
+	"github.com/brandonapol/lasso/internal/source"
+	"github.com/brandonapol/lasso/internal/store"
 )
+
+// DBFile is the daemon's database in stateDir.
+func DBFile(stateDir string) string { return filepath.Join(stateDir, "lasso.db") }
+
+// startSource opens the store and starts the real source polling. The
+// returned func stops polling and closes the store.
+func startSource(ctx context.Context, opts Options) (*source.Source, func(), error) {
+	cfg := opts.Config
+	if cfg == nil {
+		c, err := config.Load()
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg = &c
+	}
+	cfgPath := "~/.config/lasso/config.toml"
+	if dir, err := config.Dir(); err == nil {
+		cfgPath = filepath.Join(dir, "config.toml")
+	}
+	runner := opts.Runner
+	if runner == nil {
+		runner = github.CLI{}
+	}
+	logf := opts.Logf
+	if logf == nil {
+		logf = log.Printf
+	}
+	st, err := store.Open(DBFile(opts.StateDir))
+	if err != nil {
+		return nil, nil, err
+	}
+	src := source.New(source.Options{
+		Repos: cfg.HotRepos, Runner: runner, Cache: st, Cursors: st,
+		ConfigPath: cfgPath, Logf: logf,
+	})
+	pctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = src.Run(pctx)
+	}()
+	return src, func() {
+		cancel()
+		<-done
+		_ = st.Close()
+	}, nil
+}
 
 // Options configures Run.
 type Options struct {
@@ -26,8 +78,16 @@ type Options struct {
 	TokenPath string
 	// StateDir holds the pidfile.
 	StateDir string
-	// Source is what the API serves.
+	// Source is what the API serves. When nil, Run builds the real one:
+	// GitHub's hot repos through the attention rules (internal/source),
+	// with its cache and cursors in lasso.db in StateDir.
 	Source api.Source
+	// Config is used to build the real source; nil loads config.toml.
+	Config *config.Config
+	// Runner starts gh for the real source; nil is the real gh.
+	Runner github.Runner
+	// Logf gets the real source's log lines; nil logs to stderr.
+	Logf func(format string, args ...any)
 	// Ready, if set, is called with the bound address once listening.
 	Ready func(addr *net.TCPAddr)
 }
@@ -68,8 +128,18 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
+	src := opts.Source
+	if src == nil {
+		live, stopSource, err := startSource(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("lasso serve: %w", err)
+		}
+		defer stopSource()
+		src = live
+	}
+
 	srv := &http.Server{
-		Handler:           api.Handler(opts.Source, api.Options{Token: token, Port: addr.Port}),
+		Handler:           api.Handler(src, api.Options{Token: token, Port: addr.Port}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Request contexts end with ctx, so open event streams close on
 		// shutdown instead of holding it up.

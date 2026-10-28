@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/config"
 	"github.com/brandonapol/lasso/internal/daemon"
 	"github.com/brandonapol/lasso/internal/tui"
@@ -92,8 +91,8 @@ func root() *cobra.Command {
 	return cmd
 }
 
-// serve runs the daemon until SIGINT or SIGTERM. Until the real sources
-// land it serves an empty in-memory fake.
+// serve runs the daemon until SIGINT or SIGTERM. It serves the real source
+// (daemon.Run builds it when Source is nil).
 func serve(ctx context.Context) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -113,6 +112,6 @@ func serve(ctx context.Context) error {
 		Port:      cfg.API.Port,
 		TokenPath: filepath.Join(dir, "token"),
 		StateDir:  state,
-		Source:    api.NewFakeSource(),
+		Config:    &cfg,
 	})
 }

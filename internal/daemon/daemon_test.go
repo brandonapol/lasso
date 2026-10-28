@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/brandonapol/lasso/internal/api"
+	"github.com/brandonapol/lasso/internal/config"
 )
 
 func freePort(t *testing.T) int {
@@ -155,4 +159,46 @@ func TestEnsureReportsEarlyExit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "port taken") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// With no Source, Run builds the real one. With no hot repos it makes no gh
+// calls and every tab explains how to add them.
+func TestRunServesRealSource(t *testing.T) {
+	port := freePort(t)
+	opts := testOptions(t, port)
+	opts.Source = nil
+	cfg := config.Default()
+	opts.Config = &cfg
+	opts.Runner = noGH{t}
+	if err := start(t, opts); err != nil {
+		t.Fatal(err)
+	}
+	token, err := os.ReadFile(opts.TokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/items?tab=issues", port), nil)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct{ Items []api.Item }
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 1 || !strings.Contains(body.Items[0].Title, "hot_repos") {
+		t.Fatalf("items: %+v", body.Items)
+	}
+	if _, err := os.Stat(DBFile(opts.StateDir)); err != nil {
+		t.Fatalf("no database: %v", err)
+	}
+}
+
+type noGH struct{ t *testing.T }
+
+func (g noGH) Run(_ context.Context, args ...string) ([]byte, error) {
+	g.t.Errorf("unexpected gh call %q", args)
+	return nil, errors.New("no gh in this test")
 }
