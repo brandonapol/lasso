@@ -1,0 +1,80 @@
+package store
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestDeleteAndReopenGivesEmptyMigratedDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "lasso.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCursor("brief", "2026-10-27T13:38:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		os.Remove(path + suffix)
+	}
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if v, err := s.Version(); err != nil || v != len(migrations) {
+		t.Fatalf("version = %d, %v", v, err)
+	}
+	if c, err := s.Cursor("brief"); err != nil || c != "" {
+		t.Fatalf("cursor survived delete: %q %v", c, err)
+	}
+}
+
+func TestReopenKeepsData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lasso.db")
+	s, _ := Open(path)
+	s.SetCursor("brief", "a")
+	s.SetCursor("brief", "b")
+	s.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if c, _ := s.Cursor("brief"); c != "b" {
+		t.Fatalf("cursor = %q", c)
+	}
+}
+
+func TestCacheExpiry(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "lasso.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Unix(1_800_000_000, 0)
+	if err := s.CachePut("k", []byte("v"), now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok, _ := s.CacheGet("k", now.Add(30*time.Second)); !ok || string(v) != "v" {
+		t.Fatalf("fresh get = %q %v", v, ok)
+	}
+	if _, ok, _ := s.CacheGet("k", now.Add(2*time.Minute)); ok {
+		t.Fatal("expired value returned")
+	}
+}
+
+func TestNewerSchemaRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lasso.db")
+	s, _ := Open(path)
+	s.DB.Exec(`PRAGMA user_version = 999`)
+	s.Close()
+	if _, err := Open(path); err == nil {
+		t.Fatal("opened a newer schema")
+	}
+}

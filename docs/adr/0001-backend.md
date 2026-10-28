@@ -128,7 +128,7 @@ Every event becomes an *item* at exactly one level:
 **How an item gets its level:**
 
 - **Level rules first.** These are deterministic Go code, not a model. Examples: a failing Actions run on a default branch is `brief`; a permission prompt that no standing rule covers is `ask`.
-- **Then Haiku** sorts whatever the rules left unclassified, choosing between `log` and `brief` only. It can never raise anything to `ask`.
+- **Then Jev** (TypeSafe's typed decision model, §7) sorts whatever the rules left unclassified, choosing between `log` and `brief` only. Without a Jev key, Haiku does it. Neither can raise anything to `ask`.
 
 **The interrupt budget** defaults to 2 `ask`s a day.
 
@@ -162,9 +162,11 @@ A glossary maps bot jargon to plain words ("stale base" → "the branch it start
 
 | Use | Model | Cap |
 |---|---|---|
-| Event digest ("412 messages → 3 points"), level sorting | `claude-haiku-4-5-20251001` | default $1/day |
+| Shortening long lists: is this item worth keeping, which bucket, what rank; level sorting | Jev (`jev-latest`, TypeSafe), when `JEV_TOKEN` is set | default $0.50/day |
+| Event digest wording ("412 messages → 3 points") | `claude-haiku-4-5-20251001` | default $1/day |
 | Summaries tab (24h per hot repo), decision cards, agent pane | `claude-sonnet-5-5` | default $5/day |
 
+- **Jev cuts before a writer writes.** Jev answers typed questions (pick one key, or true/false) with a calibrated confidence and costs about $0.04 per million input tokens. Every long list (bot events, issues, runs, a repo's last 24 hours) goes through Jev first, one question per item ("worth the user's attention?", "which of these buckets?"). Only items it keeps with confidence ≥ 0.7 reach Haiku or Sonnet. Low-confidence items are kept rather than dropped, so a Jev mistake costs tokens, not information. Jev never writes text the user reads and never decides permissions. lasso works without Jev: Haiku does the sorting, at higher cost. The client shape is borrowed from saddle's `internal/triage/jev.go`.
 - **Inputs are compact structured deltas,** not raw pane text, the way saddle's narrator does it. lasso borrows narrator's batching, salient-flush and daily-cap design.
 - **All bot and GitHub text is untrusted.** It is fenced with a random nonce before going into any prompt, and clipped.
 - **Past a cap,** the feature falls back to local text ("12 new messages from grok-scout") and says it's over the cap.
