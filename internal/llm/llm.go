@@ -28,6 +28,9 @@ import (
 const (
 	// Haiku is the model the digest uses.
 	Haiku = "claude-haiku-4-5-20251001"
+	// Sonnet is the model the summaries tab, decision cards and the agent
+	// pane use.
+	Sonnet = "claude-sonnet-5-5"
 
 	defaultBaseURL = "https://api.anthropic.com"
 	apiVersion     = "2023-06-01"
@@ -42,11 +45,13 @@ type Price struct {
 
 // Prices are Anthropic's published per-token list prices. Source:
 // https://docs.anthropic.com/en/docs/about-claude/pricing (Claude Haiku 4.5:
-// $1 input, $5 output per MTok; 5-minute cache writes are 1.25x input and
-// cache reads 0.1x input). Update this table when prices change; a model
-// missing from it can't be used, so spending is never under-counted.
+// $1 input, $5 output per MTok; Claude Sonnet 5.5: $2 input, $10 output;
+// 5-minute cache writes are 1.25x input and cache reads 0.1x input). Update
+// this table when prices change; a model missing from it can't be used, so
+// spending is never under-counted.
 var Prices = map[string]Price{
-	Haiku: {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
+	Haiku:  {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
+	Sonnet: {Input: 2, Output: 10, CacheWrite: 2.50, CacheRead: 0.20},
 }
 
 // Usage is the token counts the API reports for one call.
