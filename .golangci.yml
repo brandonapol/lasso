@@ -1,0 +1,19 @@
+version: "2"
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # Writes to the command's stdout/stderr.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # Deferred cleanup where the primary error is already returned.
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.DB).Close
+        - (*os.File).Close
+        - (*github.com/brandonapol/lasso/internal/store.Store).Close
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]
