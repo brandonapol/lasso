@@ -147,7 +147,7 @@ func (a *Adapter) Sessions(ctx context.Context) ([]adapter.Session, error) {
 		}
 		for _, t := range snap.Tasks {
 			out = append(out, adapter.Session{
-				ID: t.ID, Bot: Kind, Title: attention.Plain(t.Title), State: state(t.Status), PR: t.PR, Writable: admin,
+				ID: t.ID, Bot: Kind, Title: attention.Gloss(t.Title), State: state(t.Status), PR: t.PR, Writable: admin,
 			})
 		}
 		return nil
@@ -217,7 +217,7 @@ func (a *Adapter) event(it needsYouItem) adapter.Event {
 	if q := strings.TrimSpace(it.Question); q != "" && !strings.Contains(text, q) {
 		text = strings.TrimSpace(text + "\n" + q)
 	}
-	e := adapter.Event{ID: it.ID, Bot: Kind, Session: it.Task, Text: adapter.Untrusted(attention.Plain(text)), At: it.Since}
+	e := adapter.Event{ID: it.ID, Bot: Kind, Session: it.Task, Text: adapter.Untrusted(attention.Gloss(text)), At: it.Since}
 	if e.At.IsZero() {
 		e.At = a.opts.Now()
 	}
@@ -232,7 +232,7 @@ func (a *Adapter) event(it needsYouItem) adapter.Event {
 	if it.Kind == "prompt" && len(it.Options) > 0 {
 		e.PromptID = it.ID
 		for _, o := range it.Options {
-			e.Options = append(e.Options, adapter.Option{N: o.N, Label: adapter.Untrusted(attention.Plain(o.Label))})
+			e.Options = append(e.Options, adapter.Option{N: o.N, Label: adapter.Untrusted(attention.Gloss(o.Label))})
 		}
 	}
 	return e

@@ -137,7 +137,7 @@ func newFile(id, path string) *file {
 func (f *file) title() string {
 	for _, t := range []string{f.customTitle, f.aiTitle, f.agentName, f.firstPrompt} {
 		if t = strings.TrimSpace(t); t != "" {
-			return clip(attention.Plain(firstLine(t)), clipTitle)
+			return clip(attention.Gloss(firstLine(t)), clipTitle)
 		}
 	}
 	return f.id
@@ -388,7 +388,7 @@ func (f *file) event(id, text string, at time.Time) adapter.Event {
 	}
 	return adapter.Event{
 		ID: id, Bot: Kind, Session: f.id, Kind: attention.KindBotMessage,
-		Text: adapter.Untrusted(attention.Plain(text)), At: at,
+		Text: adapter.Untrusted(attention.Gloss(text)), At: at,
 	}
 }
 

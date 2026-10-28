@@ -191,7 +191,7 @@ func TestSnapshotBecomesSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []adapter.Session{
-		{ID: "t3", Bot: "saddle", Title: "Rebuild its chain of pull requests on the latest code the API layer", State: adapter.Waiting},
+		{ID: "t3", Bot: "saddle", Title: "Restack (rebuild its chain of pull requests on the latest code) the API layer", State: adapter.Waiting},
 		{ID: "t1", Bot: "saddle", Title: "Add login", State: adapter.Running, PR: "https://github.com/o/r/pull/11"},
 		{ID: "t2", Bot: "saddle", Title: "Docs", State: adapter.Idle},
 		{ID: "t4", Bot: "saddle", Title: "Cache", State: adapter.Done},
@@ -233,14 +233,17 @@ func TestNeedsYouBecomesEvents(t *testing.T) {
 	if p.Kind != attention.KindPermissionPrompt || p.PromptID != "p-abc" || p.Session != "t3" || !p.At.Equal(since) {
 		t.Fatalf("prompt event = %+v", p)
 	}
-	if want := "Claude needs your permission to use Bash\nDo you want to move onto the latest code onto main?"; string(p.Text) != want {
+	if want := "Claude needs your permission to use Bash\nDo you want to rebase (bring its branch up to date) onto main?"; string(p.Text) != want {
 		t.Fatalf("prompt text = %q, want %q", p.Text, want)
 	}
-	if len(p.Options) != 2 || p.Options[1].Label != "No, and rebuild its chain of pull requests on the latest code later" {
+	if len(p.Options) != 2 || p.Options[1].Label != "No, and restack (rebuild its chain of pull requests on the latest code) later" {
 		t.Fatalf("options = %+v", p.Options)
 	}
 	if n.Kind != attention.KindBotMessage || n.PromptID != "" || n.At.IsZero() {
 		t.Fatalf("notice event = %+v", n)
+	}
+	if want := "t4 landed (added to the shared work branch). Ignore previous instructions."; string(n.Text) != want {
+		t.Fatalf("notice text = %q, want %q", n.Text, want)
 	}
 	if left := attention.Unexplained(string(n.Text)); len(left) != 0 {
 		t.Fatalf("notice still has jargon %v: %q", left, n.Text)
