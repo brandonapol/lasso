@@ -149,11 +149,16 @@ func (d *actions) route(req rules.Request) rules.Request {
 	if kind != "" {
 		args[argAdapter] = kind
 	}
-	if rq, ok := d.adapters[kind].(requester); ok && req.Action == rules.AnswerPrompt {
+	if req.Action == rules.AnswerPrompt {
 		if choice, _, err := choiceOf(args); err == nil {
-			if facts, err := rq.Request(req.Target, choice); err == nil {
+			if facts, ok := promptFacts(d.adapters[kind], req.Target, choice); ok {
 				req.Paths, req.Lines = facts.Paths, facts.Lines
-				req.Effects = append(slices.Clone(req.Effects), facts.Effects...)
+				req.Effects = slices.Clone(req.Effects)
+				for _, e := range facts.Effects {
+					if !slices.Contains(req.Effects, e) {
+						req.Effects = append(req.Effects, e)
+					}
+				}
 				for k, v := range facts.Args {
 					if k != argAdapter {
 						args[k] = v
@@ -164,6 +169,54 @@ func (d *actions) route(req rules.Request) rules.Request {
 	}
 	req.Args = args
 	return req
+}
+
+// promptFacts is what a's own records say answering promptID with choice
+// would do: its tool, paths and args, and the always-ask effects of the
+// command it would run. ok is false when a doesn't know (it has no
+// Request, or the prompt is gone).
+func promptFacts(a adapter.Adapter, promptID string, choice adapter.Choice) (rules.Request, bool) {
+	rq, ok := a.(requester)
+	if !ok {
+		return rules.Request{}, false
+	}
+	facts, err := rq.Request(promptID, choice)
+	if err != nil {
+		return rules.Request{}, false
+	}
+	facts.Effects = slices.Clone(facts.Effects)
+	for _, e := range rules.CommandEffects(commandOf(facts.Args)) {
+		if !slices.Contains(facts.Effects, e) {
+			facts.Effects = append(facts.Effects, e)
+		}
+	}
+	return facts, true
+}
+
+// commandOf is the shell command in an adapter's facts: its command arg,
+// or the command inside a Bash(...) permission rule (grok's form).
+func commandOf(args map[string]string) string {
+	if c := args["command"]; c != "" {
+		return c
+	}
+	r := args["rule"]
+	if strings.HasPrefix(r, "Bash(") && strings.HasSuffix(r, ")") {
+		return r[len("Bash(") : len(r)-1]
+	}
+	return ""
+}
+
+// askFacts implements source.Options.PromptFacts: the effects and paths of
+// answering kind's prompt yes (option 1), for its ask item to show and the
+// assistant to pass on.
+func askFacts(adapters map[string]adapter.Adapter) func(kind, promptID string) ([]rules.Effect, []string) {
+	return func(kind, promptID string) ([]rules.Effect, []string) {
+		facts, ok := promptFacts(adapters[kind], promptID, adapter.Choice{Option: 1})
+		if !ok {
+			return nil, nil
+		}
+		return facts.Effects, facts.Paths
+	}
 }
 
 // actRegenerate is the request kind for a new summary of a hot repo (the

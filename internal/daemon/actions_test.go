@@ -92,6 +92,16 @@ action = "answer_prompt"
 // one rule: the bot fake-ok may answer its own prompts.
 func startRig(t *testing.T, prompts ...string) *rig {
 	t.Helper()
+	bot := &fakeBot{prompts: prompts}
+	r := startRigWith(t, testRules, bot)
+	r.bot = bot
+	return r
+}
+
+// startRigWith runs the real daemon with bot as its one adapter and
+// rulesTOML as rules.toml.
+func startRigWith(t *testing.T, rulesTOML string, bot adapter.Adapter) *rig {
+	t.Helper()
 	port := freePort(t)
 	opts := testOptions(t, port)
 	opts.Source = nil
@@ -100,10 +110,9 @@ func startRig(t *testing.T, prompts ...string) *rig {
 	opts.Runner = noGH{t}
 	opts.AgentToken = "agent-pane-token"
 	opts.RulesPath = filepath.Join(t.TempDir(), "rules.toml")
-	if err := os.WriteFile(opts.RulesPath, []byte(testRules), 0o600); err != nil {
+	if err := os.WriteFile(opts.RulesPath, []byte(rulesTOML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bot := &fakeBot{prompts: prompts}
 	opts.Adapters = []adapter.Adapter{bot}
 	if err := start(t, opts); err != nil {
 		t.Fatal(err)
@@ -114,7 +123,7 @@ func startRig(t *testing.T, prompts ...string) *rig {
 	}
 	return &rig{
 		t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port), userTok: strings.TrimSpace(string(tok)),
-		agentTok: opts.AgentToken, bot: bot, opts: opts,
+		agentTok: opts.AgentToken, opts: opts,
 	}
 }
 

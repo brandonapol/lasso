@@ -60,6 +60,12 @@ type Options struct {
 	// SessionRepo, if set, says which repo (owner/name) a bot session
 	// works in, "" when it can't tell. It is asked once per session.
 	SessionRepo func(kind string, se adapter.Session) string
+	// PromptFacts, if set, says what answering yes to the adapter kind's
+	// prompt would do: the always-ask effects and the files it touches,
+	// from the adapter's own records, never the bot's words. They go on
+	// the ask's focus as its Effects and Paths fields, which the assistant
+	// passes on with its answer.
+	PromptFacts func(kind, promptID string) (effects []rules.Effect, paths []string)
 	// Notices are fixed brief items on Summaries (a missing key).
 	Notices []Notice
 }
