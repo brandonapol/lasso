@@ -206,7 +206,7 @@ func (t *turn) event(session, cwd string) (adapter.Event, *pending) {
 	if said := oneLine(t.final.String()); said != "" {
 		parts = append(parts, "Said: "+clip(said, maxSaid))
 	}
-	e.Text = adapter.Untrusted(attention.Plain(strings.Join(parts, " ")))
+	e.Text = adapter.Untrusted(attention.Gloss(strings.Join(parts, " ")))
 	return e, p
 }
 

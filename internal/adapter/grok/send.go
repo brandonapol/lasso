@@ -232,7 +232,7 @@ func (a *Adapter) run(ctx context.Context, s session, promptFile string, extra [
 		a.enqueue(adapter.Event{
 			ID: sid + "/lasso-" + strconv.FormatInt(a.opts.Now().UnixNano(), 36), Bot: Kind, Session: sid,
 			Kind: attention.KindBotMessage, At: a.opts.Now(),
-			Text: adapter.Untrusted(attention.Plain(note + clip(why, 400))),
+			Text: adapter.Untrusted(attention.Gloss(note + clip(why, 400))),
 		}, nil)
 		return
 	}
@@ -241,7 +241,7 @@ func (a *Adapter) run(ctx context.Context, s session, promptFile string, extra [
 	}
 	e, p := res.turn.event(sid, s.Cwd)
 	if note != "" {
-		e.Text = adapter.Untrusted(attention.Plain(note)) + e.Text
+		e.Text = adapter.Untrusted(attention.Gloss(note)) + e.Text
 	}
 	a.enqueue(e, p)
 }
