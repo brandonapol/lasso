@@ -14,6 +14,7 @@ import (
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/config"
 	"github.com/brandonapol/lasso/internal/daemon"
+	"github.com/brandonapol/lasso/internal/tui"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -45,8 +46,19 @@ func root() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "lasso: daemon running on 127.0.0.1:%d; the TUI isn't built yet (#13)\n", cfg.API.Port)
-			return nil
+			dir, err := config.Dir()
+			if err != nil {
+				return err
+			}
+			token, err := api.LoadToken(filepath.Join(dir, "token"))
+			if err != nil {
+				return err
+			}
+			return tui.Run(tui.Options{
+				Client:   tui.NewClient(fmt.Sprintf("http://127.0.0.1:%d", cfg.API.Port), token, nil),
+				Context:  cmd.Context(),
+				HotRepos: cfg.HotRepos,
+			})
 		},
 	}
 	cmd.AddCommand(
