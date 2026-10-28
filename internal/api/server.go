@@ -112,6 +112,20 @@ func Handler(src Source, opts Options) http.Handler {
 		}
 		writeJSON(w, f)
 	})
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		st := Status{}
+		if ss, ok := src.(StatusSource); ok {
+			var err error
+			if st, err = ss.Status(r.Context()); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if st.Bots == nil {
+			st.Bots = []BotStatus{}
+		}
+		writeJSON(w, st)
+	})
 	if opts.Actions == nil {
 		mux.HandleFunc("POST /actions", func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "rules engine not built (#5)", http.StatusNotImplemented)

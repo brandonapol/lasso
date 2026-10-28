@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -170,10 +171,28 @@ func (s *Source) buildRows(items []attention.Item, now time.Time, sugs []rules.S
 			base = row{Focus: askFocus(sh.Item, e, isBot)}
 		}
 		f := base.Focus
-		f.ID, f.Tab, f.Status = "doing:"+sh.Item.ID, api.TabDoing, "needs you"
+		f.ID, f.Tab, f.Status, f.Right = "doing:"+sh.Item.ID, api.TabDoing, "needs you", "needs you"
 		add(row{Focus: f, group: 1, seq: i, why: sh.LineJumper})
 	}
+	for id, r := range rows {
+		rows[id] = finish(r)
+	}
 	return rows
+}
+
+// finish fills what every row has the same way: its right-hand text, when
+// the row didn't set its own, is its status; and its focus can open its
+// link and explain its jargon.
+func finish(r row) row {
+	if r.Right == "" && r.Byline == "" {
+		r.Right = r.Status
+	}
+	acts := slices.Clone(r.Actions)
+	if r.URL != "" {
+		acts = append(acts, api.Action{Key: "o", Label: "open on GitHub", Kind: api.ActionOpen})
+	}
+	r.Actions = append(acts, api.Action{Key: "?", Label: "explain", Kind: api.ActionExplain})
+	return r
 }
 
 // waitingOnUser reports whether pr belongs on In progress: the user's own,
@@ -192,7 +211,7 @@ func (s *Source) setupRow(tab api.Tab) row {
 		"    hot_repos = [\"owner/name\", \"owner/other\"]\n\n"+
 		"then restart the daemon (stop it, and run lasso again).", s.opts.ConfigPath)
 	return row{Focus: api.Focus{
-		Item: api.Item{ID: "setup:" + string(tab), Tab: tab, Title: "No hot repos yet: add hot_repos to " + s.opts.ConfigPath, Status: "setup"},
+		Item: api.Item{ID: "setup:" + string(tab), Tab: tab, Title: "No hot repos yet: add hot_repos to " + s.opts.ConfigPath, Status: "setup", Body: body},
 		Body: body,
 	}}
 }
@@ -206,6 +225,10 @@ func errorRow(repo string, e repoError, tab api.Tab) row {
 		Fields: []api.Field{
 			{Name: "What happened", Value: plainError(e.text())},
 			{Name: "Since", Value: e.since.UTC().Format(time.RFC3339)},
+		},
+		Sections: []api.Section{
+			{Label: "What happened", Body: plainError(e.text())},
+			{Label: "What GitHub said", Body: "```\n" + clip(e.text(), BodyLimit) + "\n```"},
 		},
 		Body: clip(e.text(), BodyLimit),
 	}}
@@ -223,10 +246,18 @@ func issueRow(is github.Issue) row {
 	if !is.Due.IsZero() {
 		due = is.Due.Format(time.DateOnly)
 		r.Status = "due " + due
+		r.Right = "due " + is.Due.Format("Jan 2")
+		d := is.Due
+		r.Due = &d
 		from = dueFrom(is)
 		r.group, r.at, r.asc = 1, is.Due, true
+		r.Sections = append(r.Sections, api.Section{Label: "Due", Body: is.Due.Format("Mon Jan 2, 2006") + ", from " + from + "."})
 	} else {
+		r.Right = "no due date"
 		r.group, r.at = 2, is.Updated
+	}
+	if body := strings.TrimSpace(clip(is.Body, BodyLimit)); body != "" {
+		r.Sections = append(r.Sections, api.Section{Label: "What it says", Body: body})
 	}
 	r.Fields = []api.Field{
 		{Name: "Due", Value: due},
@@ -278,6 +309,14 @@ func runRow(r github.Run) row {
 	if r.FailingStep != "" {
 		out.Fields = append(out.Fields, api.Field{Name: "Failing step", Value: r.FailingStep})
 	}
+	where := r.Workflow + " on `" + r.Branch + "`"
+	if r.Attempt > 1 {
+		where += ", attempt " + strconv.Itoa(r.Attempt)
+	}
+	out.Sections = []api.Section{{Label: "Run", Body: where + ": " + runStatus(r) + "."}}
+	if r.Failed() {
+		out.Sections = append(out.Sections, api.Section{Label: "What failed", Body: failingSummary(r)})
+	}
 	out.Fields = append(out.Fields, api.Field{Name: "URL", Value: r.URL})
 	return out
 }
@@ -324,6 +363,8 @@ func prRow(pr github.PR) row {
 			{Name: "Branch", Value: pr.Branch},
 			{Name: "Author", Value: pr.Author},
 		},
+		Sections: []api.Section{{Label: "Where it stands", Body: fmt.Sprintf(
+			"Checks: %s. Review: %s. Branch `%s`, by %s.", checksText(pr.Checks), reviewText(pr.Review), pr.Branch, pr.Author)}},
 	}}
 }
 

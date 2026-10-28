@@ -1,4 +1,4 @@
- ◆ lasso   brandonapol/lasso  brandonapol/saddle                                             ● live 
+ ◆ lasso                           ● claude 2   ◉ grok 1   ○ saddle   github synced 4m ago   ● live 
  assistant                            │ focus                                                       
                                       │                                                             
  Since you left, CI on main failed.   │ Due dates from Projects v2 fields                           
@@ -9,7 +9,10 @@
                                       │ (zebra).                                                    
                                       │                                                             
                                       │ WHERE IT STANDS                                             
-                                      │ No one has started it; the milestone is due Friday.         
+                                      │ Difficulty: standard. No one has started it; the milestone  
+                                      │ is due Friday.                                              
+                                      │ • needs an owner                                            
+                                      │ • needs a test                                              
                                       │                                                             
                                       │ ╭─────────────────────────────────────────────────────────╮ 
                                       │ │ lasso · needs an owner by Thursday to make the          │ 
@@ -22,9 +25,6 @@
                                       │                                                             
                                       │                                                             
                                       │                                                             
-                                      │                                                             
-                                      │                                                             
-                                      │                                                             
 ──────────────────────────────────────│                                                             
  › ask lasso                          │ o open on GitHub   ? explain                                
- tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                  
+ tab next pane · 1–4 tabs · ↑↓ enter focus · / search · r rules · q quit                            

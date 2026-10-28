@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/attention"
+	"github.com/brandonapol/lasso/internal/rules"
 )
 
 // Geometry.
@@ -138,19 +140,61 @@ func fit(s string, w int) string {
 }
 
 func (m *Model) viewHeader() string {
-	left := " " + accent.Render("◆") + " " + bold.Render("lasso")
+	logo := " " + accent.Render("◆") + " " + bold.Render("lasso")
+	left := logo
 	if len(m.opt.HotRepos) > 0 {
 		left += "   " + dim.Render(strings.Join(m.opt.HotRepos, "  "))
 	}
-	right := dot.Render("●") + dim.Render(" live ")
+	var parts []string
+	if st := m.daemon; st != nil {
+		for _, b := range st.Bots {
+			parts = append(parts, botDot(b))
+		}
+		if len(m.opt.HotRepos) > 0 {
+			if st.GitHubSynced != nil {
+				parts = append(parts, dim.Render("github synced "+ago(m.opt.Now(), *st.GitHubSynced)))
+			} else {
+				parts = append(parts, dim.Render("github not read yet"))
+			}
+		}
+	}
+	live := dot.Render("●") + dim.Render(" live")
 	switch {
 	case m.connected:
 	case m.dropped:
-		right = dim.Render("○ reconnecting… ")
+		live = dim.Render("○ reconnecting…")
 	default:
-		right = dim.Render("○ connecting… ")
+		live = dim.Render("○ connecting…")
+	}
+	right := strings.Join(append(parts, live), dim.Render("   ")) + " "
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.w {
+		left = logo // the hot repos give way first
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.w {
+		right = live + " "
 	}
 	return spread(left, right, m.w)
+}
+
+// botDot is one bot's state in the header: a dot, its name and how many
+// sessions it has.
+func botDot(b api.BotStatus) string {
+	var g string
+	switch b.State {
+	case api.BotWorking:
+		g = dot.Render("●")
+	case api.BotWaiting:
+		g = accent.Render("◉")
+	case api.BotUnreachable:
+		g = accent.Render("×")
+	default:
+		g = dim.Render("○")
+	}
+	s := g + " " + dim.Render(b.Kind)
+	if b.Count > 0 {
+		s += dim.Render(" " + strconv.Itoa(b.Count))
+	}
+	return s
 }
 
 // spread puts left and right at either end of a w-cell line.
@@ -165,7 +209,7 @@ func spread(left, right string, w int) string {
 func (m *Model) viewFooter() string {
 	keys := []struct{ k, what string }{
 		{"tab", "next pane"}, {"1–4", "tabs"}, {"↑↓ enter", "focus"},
-		{"o", "open on GitHub"}, {"/", "search"}, {"r", "rules"},
+		{"/", "search"}, {"r", "rules"}, {"q", "quit"},
 	}
 	parts := make([]string, len(keys))
 	for i, k := range keys {
@@ -287,11 +331,11 @@ func (m *Model) viewList(w, h int) string {
 		under.WriteString(rule.Render(strings.Repeat("─", n)))
 	}
 	hint := " " + dim.Render(tabHints[m.tab])
-	switch {
-	case m.searching || m.search.Value() != "":
+	if g := m.action("g"); g != nil {
+		hint += dim.Render(" · ") + bold.Render(g.Key) + dim.Render(" "+g.Label)
+	}
+	if m.searching || m.search.Value() != "" {
 		hint = " " + m.search.View()
-	case m.tab == tabSummaries:
-		hint += dim.Render(" · ") + bold.Render("g") + dim.Render(" regenerate")
 	}
 	lines := []string{tabs.String(), under.String(), hint, ""}
 
@@ -354,7 +398,7 @@ func (m *Model) row(it api.Item, sel bool, w int) string {
 	if m.changed[it.ID] {
 		mark = st(dot).Render("• ")
 	}
-	status := st(dim).Render(it.Status)
+	status := st(dim).Render(it.Right)
 	tw := inner - lipgloss.Width(status) - lipgloss.Width(mark) - 1
 	title := mark + st(bold).Render(ansi.Truncate(it.Title, max(tw, 1), "…"))
 	gap := inner - lipgloss.Width(title) - lipgloss.Width(status)
@@ -385,20 +429,31 @@ func (m *Model) card(it api.Item, sel bool, w int) string {
 	if name == "" {
 		name = it.Title
 	}
-	regen := dim.Render("g regenerate")
-	head := bold.Render(ansi.Truncate(name, max(cw-lipgloss.Width(regen)-1, 1), "…"))
-	head += strings.Repeat(" ", max(cw-lipgloss.Width(head)-lipgloss.Width(regen), 1)) + regen
-	text := dim.Render("loading…")
-	if b, ok := m.bodies[it.ID]; ok {
-		text = b.Body
-		if strings.TrimSpace(text) == "" {
-			text = it.Title
-		}
-		text = lipgloss.NewStyle().Width(cw).Render(text)
+	// The selected card shows its key, from its focus's actions.
+	regen := ""
+	if g := m.action("g"); sel && g != nil {
+		regen = dim.Render(g.Key + " " + g.Label)
 	}
-	foot := "last 24h · updated " + it.Updated.In(m.opt.Now().Location()).Format("15:04")
-	if it.Status != "" {
-		foot = "last 24h · " + it.Status + " at " + it.Updated.In(m.opt.Now().Location()).Format("15:04")
+	head := bold.Render(ansi.Truncate(name, max(cw-lipgloss.Width(regen)-1, 1), "…"))
+	if regen != "" {
+		head += strings.Repeat(" ", max(cw-lipgloss.Width(head)-lipgloss.Width(regen), 1)) + regen
+	}
+	text := it.Body
+	if strings.TrimSpace(text) == "" {
+		text = it.Title
+	}
+	text = renderMarkdown(text, cw)
+	foot := "last 24h"
+	if it.Byline != "" {
+		foot += " · " + it.Byline
+	}
+	if !it.Updated.IsZero() {
+		at := it.Updated.In(m.opt.Now().Location()).Format("15:04")
+		if it.Byline != "" {
+			foot += " at " + at
+		} else {
+			foot += " · updated " + at
+		}
 	}
 	body := head + "\n" + text + "\n\n" + dim.Render(ansi.Truncate(foot, cw, "…"))
 	card := lipgloss.NewStyle().
@@ -426,7 +481,7 @@ func (m *Model) viewFocus(w, h int) string {
 	}
 	add(bold.Width(cw).Render(it.Title))
 	meta := []string{}
-	for _, s := range []string{it.Repo, it.Status} {
+	for _, s := range []string{it.Repo, it.Right} {
 		if s != "" {
 			meta = append(meta, s)
 		}
@@ -437,14 +492,17 @@ func (m *Model) viewFocus(w, h int) string {
 	add(dim.Width(cw).Render(strings.Join(meta, " · ")))
 	lines = append(lines, "")
 
-	var body string
-	loaded := m.focus != nil && m.focus.ID == it.ID
-	if loaded {
-		body = m.focus.Body
-	}
+	f := m.shownFocus()
 	if m.overlay == "explain" {
 		add(dim.Render("EXPLAIN"))
-		terms := attention.Unexplained(it.Title + "\n" + it.Status + "\n" + body)
+		text := it.Title + "\n" + it.Right
+		if f != nil {
+			text += "\n" + f.Take + "\n" + f.Body
+			for _, s := range f.Sections {
+				text += "\n" + s.Body
+			}
+		}
+		terms := attention.Unexplained(text)
 		if len(terms) == 0 {
 			add(dim.Width(cw).Render("Nothing here is bot jargon."))
 		}
@@ -456,30 +514,49 @@ func (m *Model) viewFocus(w, h int) string {
 		add(dim.Render("? or esc to close"))
 		return strings.Join(lines, "\n")
 	}
-	if !loaded {
+	var keys []string
+	if f == nil {
 		add(dim.Render("loading…"))
 	} else {
-		secs, take := parseBody(body)
+		secs := f.Sections
+		if len(secs) == 0 && strings.TrimSpace(f.Body) != "" {
+			secs = []api.Section{{Body: f.Body}}
+		}
 		for _, s := range secs {
-			if s.label != "" {
-				add(dim.Render(strings.ToUpper(s.label)))
+			if s.Label != "" {
+				add(dim.Render(strings.ToUpper(s.Label)))
 			}
-			if s.text != "" {
-				add(lipgloss.NewStyle().Width(cw).Render(s.text))
+			if strings.TrimSpace(s.Body) != "" {
+				add(renderMarkdown(s.Body, cw))
 			}
 			lines = append(lines, "")
 		}
-		if take != "" {
+		if f.Take != "" {
 			add(lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(orange).
-				Foreground(orange).Padding(0, 1).Width(cw - 2).Render("lasso · " + take))
+				Foreground(orange).Padding(0, 1).Width(cw - 2).Render("lasso · " + plainInline(f.Take)))
+			lines = append(lines, "")
+		}
+		// Answers are listed in full; the other actions go on the last line.
+		var answers []api.Action
+		for _, a := range f.Actions {
+			if a.Request != nil && a.Kind == string(rules.AnswerPrompt) {
+				answers = append(answers, a)
+			} else {
+				keys = append(keys, bold.Render(a.Key)+dim.Render(" "+a.Label))
+			}
+		}
+		if len(answers) > 0 {
+			head := "ANSWER"
+			if m.pane != paneFocus {
+				head += " · enter, then a key"
+			}
+			add(dim.Render(head))
+			for _, a := range answers {
+				add(bold.Render(a.Key) + "  " + lipgloss.NewStyle().Width(max(cw-3, 1)).Render(a.Label))
+			}
 		}
 	}
-
-	actions := []string{bold.Render("o") + dim.Render(" open on GitHub"), bold.Render("?") + dim.Render(" explain")}
-	if m.tab == tabSummaries {
-		actions = append(actions, bold.Render("g")+dim.Render(" regenerate"))
-	}
-	foot := " " + strings.Join(actions, "   ")
+	foot := " " + strings.Join(keys, "   ")
 	if len(lines) > h-2 {
 		lines = lines[:h-2]
 	}
@@ -487,36 +564,6 @@ func (m *Model) viewFocus(w, h int) string {
 		lines = append(lines, "")
 	}
 	return strings.Join(append(lines, "", foot), "\n")
-}
-
-type section struct{ label, text string }
-
-// parseBody splits a focus body into labelled sections ("## Label" lines
-// start one) and lasso's one-line take (a line starting "lasso:").
-func parseBody(body string) ([]section, string) {
-	var secs []section
-	var take string
-	cur := section{}
-	flush := func() {
-		cur.text = strings.TrimSpace(cur.text)
-		if cur.label != "" || cur.text != "" {
-			secs = append(secs, cur)
-		}
-	}
-	for _, ln := range strings.Split(body, "\n") {
-		t := strings.TrimSpace(ln)
-		switch {
-		case strings.HasPrefix(t, "## "):
-			flush()
-			cur = section{label: strings.TrimSpace(t[3:])}
-		case strings.HasPrefix(strings.ToLower(t), "lasso:"):
-			take = strings.TrimSpace(t[len("lasso:"):])
-		default:
-			cur.text += ln + "\n"
-		}
-	}
-	flush()
-	return secs, take
 }
 
 // ago says how long before now t was, in the fewest words.

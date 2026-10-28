@@ -1,4 +1,4 @@
- ◆ lasso   brandonapol/lasso  brandonapol/saddle                                                                                                                                                 ● live 
+ ◆ lasso   brandonapol/lasso  brandonapol/saddle                                                                                       ● claude 2   ◉ grok 1   ○ saddle   github synced 4m ago   ● live 
  assistant                            │ 1 Issues   2 Actions   3 In progress   4 Summaries                                                               │ focus                                        
                                       │─━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────│                                              
  Since you left, CI on main failed.   │ open issues in your hot repos                                                                                    │ Due dates from Projects v2 fields            
@@ -9,8 +9,10 @@
                                       │  Restack loses claims after a crash                                                                    due Nov 3 │ came from (zebra).                           
                                       │  brandonapol/saddle · updated 26h ago                                                                            │                                              
                                       │                                                                                                                  │ WHERE IT STANDS                              
-                                      │  Flaky poller test                                                                                   no due date │ No one has started it; the milestone is due  
-                                      │  brandonapol/lasso · updated 3d ago                                                                              │ Friday.                                      
+                                      │  Flaky poller test                                                                                   no due date │ Difficulty: standard. No one has started it; 
+                                      │  brandonapol/lasso · updated 3d ago                                                                              │ the milestone is due Friday.                 
+                                      │                                                                                                                  │ • needs an owner                             
+                                      │                                                                                                                  │ • needs a test                               
                                       │                                                                                                                  │                                              
                                       │                                                                                                                  │ ╭──────────────────────────────────────────╮ 
                                       │                                                                                                                  │ │ lasso · needs an owner by Thursday to    │ 
@@ -43,8 +45,6 @@
                                       │                                                                                                                  │                                              
                                       │                                                                                                                  │                                              
                                       │                                                                                                                  │                                              
-                                      │                                                                                                                  │                                              
-                                      │                                                                                                                  │                                              
 ──────────────────────────────────────│                                                                                                                  │                                              
  › ask lasso                          │                                                                                                                  │ o open on GitHub   ? explain                 
- tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                                                                                                                      
+ tab next pane · 1–4 tabs · ↑↓ enter focus · / search · r rules · q quit                                                                                                                                

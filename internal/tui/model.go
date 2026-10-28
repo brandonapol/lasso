@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/brandonapol/lasso/internal/api"
+	"github.com/brandonapol/lasso/internal/rules"
 )
 
 // Options configures the TUI.
@@ -35,6 +36,9 @@ type Options struct {
 	// Reconnect is how long to wait before reopening a dropped event stream
 	// (default 3s).
 	Reconnect time.Duration
+	// Tick is how often the screen is redrawn so ages ("synced 4m ago")
+	// move with no event (default 30s).
+	Tick time.Duration
 }
 
 // Run shows the TUI until the user quits.
@@ -77,7 +81,12 @@ type Model struct {
 	focus   *api.Focus
 	focusID string
 	bodies  map[string]api.Focus
+	// changed marks rows that changed since the user last looked. Nothing
+	// is marked until the daemon has read GitHub once (status) and the
+	// row's tab has loaded, so the first load marks nothing.
 	changed map[string]bool
+	// daemon is the header's status, as /status last said.
+	daemon *api.Status
 
 	input     textinput.Model
 	search    textinput.Model
@@ -112,6 +121,9 @@ func New(opts Options) *Model {
 	}
 	if opts.Reconnect <= 0 {
 		opts.Reconnect = 3 * time.Second
+	}
+	if opts.Tick <= 0 {
+		opts.Tick = 30 * time.Second
 	}
 	in := textinput.New()
 	in.Prompt = "› "
@@ -155,11 +167,16 @@ type (
 	droppedMsg   struct{ err error }
 	reconnectMsg struct{}
 	statusMsg    string
+	daemonStatus struct {
+		st  api.Status
+		err error
+	}
+	tickMsg struct{}
 )
 
 // Init fetches every tab and opens the event stream.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.connect(), m.waitEvent(), m.openChat()}
+	cmds := []tea.Cmd{m.connect(), m.waitEvent(), m.openChat(), m.fetchStatus(), m.tick()}
 	for i := range api.Tabs {
 		cmds = append(cmds, m.fetchItems(i))
 	}
@@ -172,6 +189,18 @@ func (m *Model) fetchItems(tab int) tea.Cmd {
 		items, err := c.Items(ctx, api.Tabs[tab])
 		return itemsMsg{tab: tab, items: items, err: err}
 	}
+}
+
+func (m *Model) fetchStatus() tea.Cmd {
+	c, ctx := m.opt.Client, m.ctx
+	return func() tea.Msg {
+		st, err := c.Status(ctx)
+		return daemonStatus{st: st, err: err}
+	}
+}
+
+func (m *Model) tick() tea.Cmd {
+	return tea.Tick(m.opt.Tick, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 func (m *Model) fetchFocus(id string) tea.Cmd {
@@ -280,6 +309,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dropped {
 			// Catch up on whatever changed while the stream was down.
 			m.dropped = false
+			cmds = append(cmds, m.fetchStatus())
 			for t := range api.Tabs {
 				cmds = append(cmds, m.fetchItems(t))
 			}
@@ -302,6 +332,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status = string(msg)
 		return m, nil
+	case daemonStatus:
+		// A daemon without /status (an older one) just shows no dots.
+		if msg.err == nil {
+			m.setStatus(msg.st)
+		}
+		return m, nil
+	case tickMsg:
+		if m.ctx.Err() != nil {
+			return m, nil
+		}
+		return m, m.tick()
 	case tea.MouseMsg:
 		return m, m.mouse(msg)
 	case tea.KeyMsg:
@@ -330,14 +371,6 @@ func (m *Model) gotItems(msg itemsMsg) tea.Cmd {
 		m.pendingFocus = ""
 	}
 	var cmds []tea.Cmd
-	if msg.tab == tabSummaries {
-		// Summary cards show their bodies inline.
-		for _, it := range msg.items {
-			if b, ok := m.bodies[it.ID]; !ok || !b.Updated.Equal(it.Updated) {
-				cmds = append(cmds, m.fetchFocus(it.ID))
-			}
-		}
-	}
 	if msg.tab == m.tab {
 		cmds = append(cmds, m.refocus(false))
 	}
@@ -355,11 +388,13 @@ func (m *Model) gotEvent(ev Event) tea.Cmd {
 		if t < 0 {
 			return nil
 		}
-		if sel := m.selected(m.tab); sel == nil || sel.ID != it.ID {
-			m.changed[it.ID] = true
+		if m.marks(t) {
+			if sel := m.selected(m.tab); sel == nil || sel.ID != it.ID {
+				m.changed[it.ID] = true
+			}
 		}
 		cmds := []tea.Cmd{m.fetchItems(t)}
-		if it.ID == m.focusID || t == tabSummaries {
+		if it.ID == m.focusID {
 			cmds = append(cmds, m.fetchFocus(it.ID))
 		}
 		return tea.Batch(cmds...)
@@ -382,6 +417,12 @@ func (m *Model) gotEvent(ev Event) tea.Cmd {
 		return tea.Batch(cmds...)
 	case api.EventChatUpdated:
 		return m.fetchChat()
+	case api.EventStatusChanged:
+		var st api.Status
+		if json.Unmarshal(ev.Data, &st) == nil {
+			m.setStatus(st)
+		}
+		return nil
 	case api.EventFocus:
 		var d struct {
 			ID  string  `json:"id"`
@@ -395,6 +436,22 @@ func (m *Model) gotEvent(ev Event) tea.Cmd {
 	// brief.updated needs nothing here: the assistant writes "since you
 	// left" when the TUI opens.
 	return nil
+}
+
+// setStatus takes a new status from the daemon.
+func (m *Model) setStatus(st api.Status) {
+	m.daemon = &st
+}
+
+// marks reports whether a change to a row on tab t gets a marker: only
+// once the tab has loaded and the daemon has read GitHub at least once
+// (or has no hot repos to read), so what the first load and the first
+// sync bring in counts as already seen.
+func (m *Model) marks(t int) bool {
+	if !m.loaded[t] || m.daemon == nil {
+		return false
+	}
+	return m.daemon.GitHubSynced != nil || len(m.opt.HotRepos) == 0
 }
 
 // focusOn moves the middle and right panes to one item, as the assistant
@@ -449,7 +506,7 @@ func (m *Model) visible(tab int) []api.Item {
 	}
 	var out []api.Item
 	for _, it := range m.items[tab] {
-		if strings.Contains(strings.ToLower(it.Title+" "+it.Repo+" "+it.Status), q) {
+		if strings.Contains(strings.ToLower(it.Title+" "+it.Repo+" "+it.Right), q) {
 			out = append(out, it)
 		}
 	}
@@ -611,24 +668,77 @@ func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 		m.overlay = ""
 		m.setPane(paneFocus)
 		return m.refocus(false)
-	case "o":
-		return m.open()
 	case "/":
 		m.overlay = ""
 		m.setPane(paneList)
 		m.searching = true
 		return m.search.Focus()
-	case "g":
-		return m.regenerate()
 	case "r":
 		m.overlay = toggle(m.overlay, "rules")
-	case "?":
+	default:
+		if a := m.action(k); a != nil {
+			return m.do(*a)
+		}
+	}
+	return nil
+}
+
+// shownFocus is the focus of the selected row, once loaded.
+func (m *Model) shownFocus() *api.Focus {
+	it := m.selected(m.tab)
+	if it == nil || m.focus == nil || m.focus.ID != it.ID {
+		return nil
+	}
+	return m.focus
+}
+
+// action is the selected item's action on key k, if it has one.
+func (m *Model) action(k string) *api.Action {
+	f := m.shownFocus()
+	if f == nil {
+		return nil
+	}
+	for i := range f.Actions {
+		if f.Actions[i].Key == k {
+			return &f.Actions[i]
+		}
+	}
+	return nil
+}
+
+// do runs one of the focus pane's actions.
+func (m *Model) do(a api.Action) tea.Cmd {
+	switch a.Kind {
+	case api.ActionOpen:
+		return m.open()
+	case api.ActionExplain:
 		m.overlay = toggle(m.overlay, "explain")
 		if m.overlay == "explain" && m.w < wideWidth {
 			m.setPane(paneFocus)
 		}
+		return nil
 	}
-	return nil
+	if a.Request == nil {
+		return nil
+	}
+	if a.Kind == string(rules.AnswerPrompt) && m.pane != paneFocus {
+		// An answer goes to a bot at once; ask for the focus pane first so
+		// a stray key in the list can't answer for the user.
+		m.status = "press enter to open the question, then " + a.Key + " to answer"
+		return nil
+	}
+	c, ctx, req, label := m.opt.Client, m.ctx, *a.Request, a.Label
+	m.status = "sending: " + label + "…"
+	return func() tea.Msg {
+		out, err := c.Action(ctx, req)
+		if err != nil {
+			return statusMsg("couldn't " + strings.ToLower(label) + ": " + err.Error())
+		}
+		if d := first(out.Detail, out.Decision.Reason); d != "" {
+			return statusMsg(d)
+		}
+		return statusMsg("done: " + label)
+	}
 }
 
 func toggle(cur, want string) string {
@@ -650,24 +760,6 @@ func (m *Model) open() tea.Cmd {
 			return statusMsg("couldn't open " + url + ": " + err.Error())
 		}
 		return statusMsg("opened " + url)
-	}
-}
-
-func (m *Model) regenerate() tea.Cmd {
-	if m.tab != tabSummaries {
-		return nil
-	}
-	it := m.selected(m.tab)
-	if it == nil {
-		return nil
-	}
-	c, ctx, id := m.opt.Client, m.ctx, it.ID
-	m.status = "asking for a new summary…"
-	return func() tea.Msg {
-		if err := c.Action(ctx, "regenerate_summary", id); err != nil {
-			return statusMsg("couldn't regenerate: " + err.Error())
-		}
-		return statusMsg("regenerating; it will update here when it's written")
 	}
 }
 

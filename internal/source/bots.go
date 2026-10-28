@@ -318,6 +318,28 @@ func askFocus(it attention.Item, e adapter.Event, isBot bool) api.Focus {
 			api.Field{Name: "If no", Value: c.IfNo},
 			api.Field{Name: "lasso suggests", Value: c.Recommendation},
 		)
+		for _, sec := range []api.Section{
+			{Label: "What it wants", Body: c.Wants},
+			{Label: "Why it's asking", Body: c.WhyAsking},
+			{Label: "In plain words", Body: c.Plain},
+			{Label: "If yes", Body: c.IfYes},
+			{Label: "If no", Body: c.IfNo},
+		} {
+			if strings.TrimSpace(sec.Body) != "" {
+				f.Sections = append(f.Sections, sec)
+			}
+		}
+		f.Take = c.Recommendation
+	}
+	if text := strings.TrimSpace(it.Summary); text != "" {
+		label := "What it said"
+		if isBot {
+			label = "What " + e.Bot + " said"
+		}
+		f.Sections = append(f.Sections, api.Section{Label: label, Body: quote(text)})
+	}
+	if isBot && e.PromptID != "" {
+		f.Actions = answerActions(e, it.Repo)
 	}
 	if isBot {
 		f.Fields = append(f.Fields, api.Field{Name: "Bot", Value: e.Bot})
@@ -336,6 +358,82 @@ func askFocus(it attention.Item, e adapter.Event, isBot bool) api.Focus {
 	return f
 }
 
+// quote marks every line of a bot's words as a quotation.
+func quote(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, ln := range lines {
+		lines[i] = "> " + ln
+	}
+	return strings.Join(lines, "\n")
+}
+
+// answerKeys are the keys an ask's options go on: y and n for the first
+// yes and no, then letters no other key uses. Digits switch tabs.
+var answerKeys = []string{"a", "b", "c", "d", "e", "f", "h", "i"}
+
+// answerActions are an ask's options, each an answer_prompt the user's key
+// sends as is. args.choice says the answer in plain words for suggested
+// rules: "yes", "no", or the option.
+func answerActions(e adapter.Event, repo string) []api.Action {
+	var out []api.Action
+	used := map[string]bool{}
+	next := 0
+	for _, o := range e.Options {
+		label := strings.TrimSpace(string(o.Label))
+		choice := choiceWord(label)
+		key := ""
+		switch {
+		case choice == "yes" && !used["y"]:
+			key = "y"
+		case choice == "no" && !used["n"]:
+			key = "n"
+		case next < len(answerKeys):
+			key = answerKeys[next]
+			next++
+		default:
+			continue
+		}
+		used[key] = true
+		if choice == "" {
+			choice = "option " + strconv.Itoa(o.N)
+		}
+		out = append(out, api.Action{Key: key, Label: label, Kind: string(rules.AnswerPrompt), Request: &rules.Request{
+			Bot: botName(e.Bot, e.Session), Action: rules.AnswerPrompt, Repo: repo, Target: e.PromptID,
+			Args: map[string]string{"option": strconv.Itoa(o.N), "choice": choice},
+		}})
+	}
+	return out
+}
+
+// choiceWord is "yes" or "no" for an option that plainly says so, else "".
+func choiceWord(label string) string {
+	w := strings.ToLower(strings.TrimSpace(label))
+	end := strings.IndexFunc(w, func(r rune) bool { return r < 'a' || r > 'z' })
+	if end >= 0 {
+		w = w[:end]
+	}
+	switch w {
+	case "yes", "y", "allow", "approve", "ok", "proceed", "continue":
+		return "yes"
+	case "no", "n", "deny", "reject", "cancel", "stop":
+		return "no"
+	}
+	return ""
+}
+
+// botName is the name the rules match "who" against for a session of the
+// adapter kind, as the agent pane names it: "grok-scout" for kind grok and
+// session scout. The daemon routes it back to that adapter by its prefix.
+func botName(kind, session string) string {
+	switch {
+	case session == "":
+		return kind
+	case session == kind, strings.HasPrefix(session, kind+"-"), strings.HasPrefix(session, kind+":"):
+		return session
+	}
+	return kind + "-" + session
+}
+
 // botRows lays out the sessions and adapter problems on In progress.
 func (s *Source) botRows(add func(row)) {
 	counts := s.sessionCounts()
@@ -347,6 +445,10 @@ func (s *Source) botRows(add func(row)) {
 			Fields: []api.Field{
 				{Name: "What happened", Value: p.text()},
 				{Name: "Since", Value: p.since.UTC().Format(time.RFC3339)},
+			},
+			Sections: []api.Section{
+				{Label: "What happened", Body: p.text()},
+				{Label: "What lasso does", Body: "lasso keeps showing what it last read from " + kind + " and tries again every " + BotsEvery.String() + "."},
 			},
 			Body: "lasso keeps showing what it last read from " + kind + " and tries again every " + BotsEvery.String() + ".",
 		}})
@@ -377,9 +479,21 @@ func (s *Source) botRows(add func(row)) {
 			if repo != "" {
 				fields = append(fields, api.Field{Name: "Repo", Value: repo})
 			}
+			now := "It is " + sessionStatus(se.State) + "."
+			if c, ok := counts[se.ID]; ok {
+				now += " Of its last " + c.String() + " messages, the digest kept the ones on the right of the arrow to tell you."
+			}
+			secs := []api.Section{{Label: "Now", Body: now}}
+			if se.PR != "" {
+				secs = append(secs, api.Section{Label: "Pull request", Body: se.PR})
+			}
+			if !se.Writable {
+				secs = append(secs, api.Section{Label: "Sending", Body: "lasso can only read this session, not send to it."})
+			}
 			add(row{group: 3, seq: seq, Focus: api.Focus{
-				Item:   api.Item{ID: sessionID(kind, se.ID), Tab: api.TabDoing, Repo: repo, Title: se.Title, Status: status},
-				Fields: fields,
+				Item:     api.Item{ID: sessionID(kind, se.ID), Tab: api.TabDoing, Repo: repo, Title: se.Title, Status: status},
+				Fields:   fields,
+				Sections: secs,
 			}})
 		}
 	}
@@ -461,10 +575,14 @@ func suggestionRows(sugs []rules.Suggestion, add func(row)) {
 		add(row{group: 0, seq: i, Focus: api.Focus{
 			Item: api.Item{
 				ID: suggestionRowID(sg), Tab: api.TabSummaries, Repo: sg.Item.Repo,
-				Title: sg.Item.Title, Status: "suggested rule", Updated: sg.Item.Created,
+				Title: sg.Item.Title, Status: "suggested rule", Updated: sg.Item.Created, Body: sg.Item.Summary,
 			},
 			Fields: fields,
-			Body:   sg.Item.Summary + "\n\nThe rule it would add to rules.toml:\n\n" + sg.TOML,
+			Sections: []api.Section{
+				{Label: "Why", Body: sg.Item.Summary},
+				{Label: "The rule it would add to rules.toml", Body: "```\n" + strings.TrimSpace(sg.TOML) + "\n```"},
+			},
+			Body: sg.Item.Summary + "\n\nThe rule it would add to rules.toml:\n\n" + sg.TOML,
 		}})
 	}
 }
