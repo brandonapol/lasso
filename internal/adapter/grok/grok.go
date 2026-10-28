@@ -282,13 +282,13 @@ func (a *Adapter) Sessions(ctx context.Context) ([]adapter.Session, error) {
 			continue
 		}
 		have[r.ID] = true
-		out = append(out, adapter.Session{ID: r.ID, Bot: Kind, Title: attention.Plain(r.Summary), State: adapter.Idle, Writable: !a.isBusy(r.ID)})
+		out = append(out, adapter.Session{ID: r.ID, Bot: Kind, Title: attention.Gloss(r.Summary), State: adapter.Idle, Writable: !a.isBusy(r.ID)})
 	}
 	return out, nil
 }
 
 func (a *Adapter) describe(s session, live bool) adapter.Session {
-	out := adapter.Session{ID: s.ID, Bot: Kind, Title: attention.Plain(s.Title)}
+	out := adapter.Session{ID: s.ID, Bot: Kind, Title: attention.Gloss(s.Title)}
 	st := a.tail(s)
 	switch {
 	case live:
