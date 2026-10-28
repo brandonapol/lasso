@@ -43,7 +43,7 @@ const (
 type Session struct {
 	ID    string `json:"id"`
 	Bot   string `json:"bot"`   // the adapter's Kind
-	Title string `json:"title"` // plain words (attention.Plain)
+	Title string `json:"title"` // bot text with jargon glossed (attention.Gloss)
 	State State  `json:"state"`
 	PR    string `json:"pr,omitempty"`
 	// Writable is false when lasso can't send to this session, so the UI

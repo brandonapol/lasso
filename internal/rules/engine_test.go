@@ -191,3 +191,45 @@ func TestUndo(t *testing.T) {
 		t.Fatalf("undo wrote %d lines, want started+ok", undoLines)
 	}
 }
+
+func TestDoAsUserSkipsRulesButIsAudited(t *testing.T) {
+	clock := now
+	// No rules at all, and a request the always-ask list would stop: the
+	// user is the approval, so it runs anyway.
+	e, x := newEngine(t, File{}, &clock)
+	req := Request{Bot: "grok-scout", Action: AnswerPrompt, Target: "p1", Effects: []Effect{MergeDefault}}
+	if _, err := e.Do(context.Background(), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("Do: %v (want refused, so the test means something)", err)
+	}
+	out, err := e.DoAsUser(context.Background(), req)
+	if err != nil || !out.Decision.Allowed || out.ID == "" {
+		t.Fatalf("DoAsUser = %+v %v", out, err)
+	}
+	if len(x.calls) != 1 || x.calls[0].Target != "p1" {
+		t.Fatalf("executor got %+v", x.calls)
+	}
+	es, _ := e.Log.Entries()
+	if len(es) != 2 || es[0].Actor != UserActor || es[0].Result != audit.Started || es[1].Actor != UserActor || es[1].Result != audit.OK {
+		t.Fatalf("audit = %+v", es)
+	}
+	if _, err := e.DoAsUser(context.Background(), Request{Bot: "x", Action: "wipe"}); !errors.Is(err, ErrRefused) {
+		t.Fatalf("unknown action: %v", err)
+	}
+}
+
+func TestDoAsUserRefusesWithoutAudit(t *testing.T) {
+	clock := now
+	e, x := newEngine(t, File{}, &clock)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	e.Log = audit.Open(filepath.Join(dir, "sub", "audit.jsonl"))
+	if _, err := e.DoAsUser(context.Background(), Request{Bot: "b", Action: Comment, Target: "o/r#1"}); !errors.Is(err, ErrAudit) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(x.calls) != 0 {
+		t.Fatalf("sent without a record: %+v", x.calls)
+	}
+}
