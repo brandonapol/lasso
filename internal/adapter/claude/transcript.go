@@ -36,7 +36,24 @@ type line struct {
 	AITitle     string          `json:"aiTitle"`
 	AgentName   string          `json:"agentName"`
 	PRURL       string          `json:"prUrl"`
+	Origin      *origin         `json:"origin"`
 }
+
+// origin is where a meta user line came from. For a message from another
+// session (kind "peer") it carries the sender's name, the message's id,
+// and its text as delivered.
+type origin struct {
+	Kind  string `json:"kind"`
+	MsgID string `json:"msg_id"`
+	Name  string `json:"name"`
+	Body  string `json:"body"`
+}
+
+// peerMsg is a message another session put into this one.
+type peerMsg struct{ from, body string }
+
+// maxPeers bounds how many peer messages a file remembers.
+const maxPeers = 64
 
 type message struct {
 	ID         string          `json:"id"`
@@ -127,11 +144,12 @@ type file struct {
 	closedMsg string // the message id whose turn already ended
 	open      map[string]*openTool
 	events    []stored
-	sent      map[string]int // texts lasso sent, whose turns its own reply event stands for
+	sent      map[string]int     // texts lasso sent, whose turns its own reply event stands for
+	peers     map[string]peerMsg // messages from other sessions, by msg_id
 }
 
 func newFile(id, path string) *file {
-	return &file{id: id, path: path, open: map[string]*openTool{}, sent: map[string]int{}}
+	return &file{id: id, path: path, open: map[string]*openTool{}, sent: map[string]int{}, peers: map[string]peerMsg{}}
 }
 
 func (f *file) title() string {
@@ -229,6 +247,12 @@ func (f *file) line(b []byte, skip map[string]int) {
 }
 
 func (f *file) user(l line) {
+	if o := l.Origin; l.IsMeta && o != nil && o.Kind == "peer" && o.MsgID != "" {
+		if len(f.peers) >= maxPeers {
+			clear(f.peers) // only the newest matter: lasso checks its sends within the hour
+		}
+		f.peers[o.MsgID] = peerMsg{from: o.Name, body: o.Body}
+	}
 	if l.Message == nil || l.IsMeta {
 		return
 	}

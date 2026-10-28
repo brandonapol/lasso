@@ -18,9 +18,12 @@ import (
 	"github.com/brandonapol/lasso/internal/rules"
 )
 
-// Send implements adapter.Adapter: it resumes an idle session headlessly
-// with text as the next prompt. It returns once grok has started the turn
-// (or failed to); the turn runs on, and its delta arrives through Events.
+// Send implements adapter.Adapter. A session grok's leader owns gets text
+// through the leader, queued in the open session (leader.go). A session
+// open in a grok window outside leader mode holds text until the window
+// closes. Any other session is resumed headlessly with text as the next
+// prompt. Send returns once grok has queued or started the turn (or
+// failed to); the turn runs on, and its delta arrives through Events.
 //
 // A session lasso can't resume (deleted, or from another grok home) gets
 // one retry as a fresh session in the same folder, so a message is never
@@ -28,6 +31,18 @@ import (
 func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(text) == "" {
 		return errors.New("grok: send needs a session and some text")
+	}
+	// Check the leader first, even for a session no window lists: a
+	// headless resume of a session the leader has loaded would fork it too.
+	if c, e, ok := a.leaderOwner(ctx, sessionID); ok {
+		return a.sendViaLeader(ctx, c, e, text)
+	}
+	if a.live()[sessionID] {
+		if _, ok := a.find(sessionID); !ok {
+			return fmt.Errorf("grok: no session %s", sessionID)
+		}
+		a.hold(sessionID, text)
+		return nil
 	}
 	s, err := a.writable(ctx, sessionID)
 	if err != nil {
@@ -40,7 +55,16 @@ func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
 // turn stopped at. Option 1 resumes the session with `--allow <rule>`,
 // option 2 with `--deny <rule>`; either way the rule lasts that one turn.
 // Free text, if any, goes to grok with the answer.
+//
+// A prompt raised in a turn lasso sent through grok's leader is answered
+// there instead, with the request's own allow-once or reject-once option.
 func (a *Adapter) Answer(ctx context.Context, promptID string, choice adapter.Choice) error {
+	a.mu.Lock()
+	lp := a.leaderPrompts[promptID]
+	a.mu.Unlock()
+	if lp != nil {
+		return a.answerLeader(promptID, lp, choice)
+	}
 	p, err := a.lookup(promptID)
 	if err != nil {
 		return err
@@ -92,6 +116,9 @@ func (a *Adapter) Request(promptID string, choice adapter.Choice) (rules.Request
 func (a *Adapter) lookup(promptID string) (*pending, error) {
 	a.mu.Lock()
 	p := a.prompts[promptID]
+	if lp := a.leaderPrompts[promptID]; p == nil && lp != nil {
+		p = lp.p
+	}
 	a.mu.Unlock()
 	if p != nil {
 		return p, nil

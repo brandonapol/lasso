@@ -63,6 +63,14 @@ func Ensure(ctx context.Context, opts EnsureOptions) error {
 	return waitHealthy(ctx, opts.Port, opts.Timeout, exited)
 }
 
+// healthClient probes /healthz without keep-alives. The shared
+// http.DefaultClient pools connections: when several probes race, or one
+// times out mid-dial, its transport parks the freshly dialed connection
+// unused in the pool. The daemon sees a connection that never sends a
+// request, which http.Server.Shutdown waits up to 5s for, so stopping the
+// daemon stalls. Without keep-alives every probe closes its connection.
+var healthClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
 // Healthy reports whether lasso's daemon answers GET /healthz on the port.
 func Healthy(ctx context.Context, port int) bool {
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
@@ -72,7 +80,7 @@ func Healthy(ctx context.Context, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := healthClient.Do(req)
 	if err != nil {
 		return false
 	}
