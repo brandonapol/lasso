@@ -125,6 +125,9 @@ type Status struct {
 	// GitHubSynced is when the hot repos were last read from GitHub
 	// without an error; nil until the first time.
 	GitHubSynced *time.Time `json:"github_synced,omitempty"`
+	// HotRepos are the repos the header names. GET /status fills them from
+	// Options.HotRepos when the source leaves them empty.
+	HotRepos []string `json:"hot_repos,omitempty"`
 }
 
 // StatusSource is a Source that knows the header's status. GET /status
