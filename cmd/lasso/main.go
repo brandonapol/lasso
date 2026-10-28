@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/config"
 	"github.com/brandonapol/lasso/internal/daemon"
 	"github.com/brandonapol/lasso/internal/tui"
