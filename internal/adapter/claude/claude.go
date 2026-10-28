@@ -1,12 +1,24 @@
 // Package claude is the Claude Code adapter. It reads Claude Code's own
 // session transcripts (~/.claude/projects/<escaped cwd>/<session>.jsonl)
-// and installs nothing into Claude Code.
+// and the files Claude Code keeps for its running sessions
+// (~/.claude/sessions/<pid>.json), and installs nothing into Claude Code.
 //
-// A session is live while its transcript changed in the last two minutes
-// or a claude process is working in it; otherwise it is idle. lasso sends
-// only to idle sessions, by resuming them headless (`claude -p --resume`)
-// in their own directory. A live session is read-only: a second writer
-// would fork the conversation under the user's feet.
+// A session is open while Claude Code's sessions directory lists it, and
+// it is busy or idle as that file says. With an older Claude Code that
+// writes no such files, lasso falls back to a guess: open while its
+// transcript changed in the last two minutes or a claude process is
+// working in it.
+//
+// Sending:
+//   - To a closed session, lasso resumes it headless (`claude -p --resume`)
+//     in its own directory.
+//   - To an open one, lasso passes the message on through its relay, a
+//     headless Claude session of its own (see relay.go), using Claude
+//     Code's messaging between sessions.
+//   - When the relay can't reach an open session, the message waits until
+//     the session's process exits, then goes out by headless resume.
+//     lasso never resumes a session a terminal still has open: a second
+//     writer would fork the conversation under the user's feet.
 //
 // Events are compacted: one per finished assistant turn (the tools it used,
 // by name, and its final words, clipped; never tool output), plus errors
@@ -23,7 +35,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,7 +54,8 @@ const Kind = "claude"
 
 // Defaults for Options.
 const (
-	// LiveWindow: a transcript written this recently belongs to a live session.
+	// LiveWindow: without Claude Code's sessions files, a transcript written
+	// this recently belongs to a live session.
 	LiveWindow = 2 * time.Minute
 	// PromptQuiet: a live session whose transcript has been quiet this long
 	// with a tool call still open is taken to be at a permission prompt.
@@ -54,6 +66,20 @@ const (
 	MaxAge = 7 * 24 * time.Hour
 	// SendTimeout bounds one resumed run.
 	SendTimeout = 15 * time.Minute
+	// RelayTimeout bounds the relay starting, and making its call.
+	RelayTimeout = 90 * time.Second
+	// NoticeWait is how long a send waits after the relay's call for
+	// Claude Code to say the receiver held or refused it.
+	NoticeWait = 3 * time.Second
+	// VerifyWait is how long a send watches the receiver's transcript for
+	// the message to land. A busy session takes it in later; lasso keeps
+	// checking for VerifyFor.
+	VerifyWait = 5 * time.Second
+	VerifyFor  = time.Hour
+	// RelayIdle: the relay stops after this long unused.
+	RelayIdle = 15 * time.Minute
+	// RelayModel is the model the relay runs: it only copies text.
+	RelayModel = "haiku"
 )
 
 // recentWindow bounds what a zero cursor replays: the last turn of each
@@ -75,6 +101,9 @@ type Runner func(ctx context.Context, dir string, args ...string) ([]byte, error
 type Options struct {
 	// Root is Claude Code's projects directory; "" means ~/.claude/projects.
 	Root string
+	// SessionsDir is where Claude Code lists its running sessions; ""
+	// means "sessions" beside Root.
+	SessionsDir string
 	// Home is the user's home directory; "" means os.UserHomeDir.
 	Home string
 	// SkipDirs are working directories whose sessions are lasso's own
@@ -83,24 +112,39 @@ type Options struct {
 	SkipDirs []string
 	// Procs lists running processes; nil means reading /proc.
 	Procs func() ([]Proc, error)
+	// Alive reports whether a pid is running; nil means asking the OS.
+	Alive func(pid int) bool
 	// Run runs claude; nil means the `claude` on PATH.
 	Run Runner
+	// StartRelay starts the relay session; nil means the `claude` on PATH.
+	StartRelay RelayStarter
+	// RelayDir is the relay's working directory; "" means
+	// <lasso's state dir>/claude-relay.
+	RelayDir string
+	// RelayModel is the relay's model; "" means RelayModel.
+	RelayModel string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// MaxAge, LiveWindow, PromptQuiet and SendTimeout override the defaults.
-	MaxAge, LiveWindow, PromptQuiet, SendTimeout time.Duration
+	// Durations override the defaults above.
+	MaxAge, LiveWindow, PromptQuiet, SendTimeout               time.Duration
+	RelayTimeout, NoticeWait, VerifyWait, VerifyFor, RelayIdle time.Duration
 }
 
 // Adapter reads and steers the user's Claude Code sessions.
 type Adapter struct {
-	opts Options
-	skip []string // directory prefixes whose sessions are someone else's
+	opts  Options
+	skip  []string // directory prefixes whose sessions are someone else's
+	relay *relay
 
-	mu      sync.Mutex
-	files   map[string]*file // by session id
-	skipped map[string]int   // unusable lines, by type
-	busy    map[string]bool  // sessions lasso is sending to right now
-	replies []adapter.Event  // replies to sends, for the next Events call
+	mu       sync.Mutex
+	files    map[string]*file // by session id
+	skipped  map[string]int   // unusable lines, by type
+	busy     map[string]bool  // sessions lasso is resuming right now
+	draining map[string]bool  // sessions whose queued messages are going out
+	queued   []queued         // messages waiting for their session to close
+	checks   []check          // relayed messages not yet seen landing
+	lastSent string           // the session the relay last sent to
+	replies  []adapter.Event  // lasso's own notes and replies, for the next Events call
 }
 
 var _ adapter.Adapter = (*Adapter)(nil)
@@ -115,11 +159,23 @@ func New(opts Options) *Adapter {
 	if opts.Root == "" {
 		opts.Root = filepath.Join(home, ".claude", "projects")
 	}
+	if opts.SessionsDir == "" {
+		opts.SessionsDir = filepath.Join(filepath.Dir(opts.Root), "sessions")
+	}
 	if opts.Procs == nil {
 		opts.Procs = procs
 	}
+	if opts.Alive == nil {
+		opts.Alive = pidAlive
+	}
 	if opts.Run == nil {
 		opts.Run = run
+	}
+	if opts.StartRelay == nil {
+		opts.StartRelay = startRelay
+	}
+	if opts.RelayModel == "" {
+		opts.RelayModel = RelayModel
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -133,15 +189,47 @@ func New(opts Options) *Adapter {
 	def(&opts.LiveWindow, LiveWindow)
 	def(&opts.PromptQuiet, PromptQuiet)
 	def(&opts.SendTimeout, SendTimeout)
+	def(&opts.RelayTimeout, RelayTimeout)
+	def(&opts.NoticeWait, NoticeWait)
+	def(&opts.VerifyWait, VerifyWait)
+	def(&opts.VerifyFor, VerifyFor)
+	def(&opts.RelayIdle, RelayIdle)
 
 	skip := []string{filepath.Join(home, ".cache", "saddle")}
-	for _, f := range []func() (string, error){config.Dir, config.StateDir} {
+	state := ""
+	for i, f := range []func() (string, error){config.Dir, config.StateDir} {
 		if d, err := f(); err == nil {
 			skip = append(skip, d)
+			if i == 1 {
+				state = d
+			}
 		}
 	}
+	if opts.RelayDir == "" {
+		if state == "" {
+			state = filepath.Join(os.TempDir(), "lasso")
+		}
+		opts.RelayDir = filepath.Join(state, "claude-relay")
+	}
+	skip = append(skip, opts.RelayDir)
 	skip = append(skip, opts.SkipDirs...)
-	return &Adapter{opts: opts, skip: skip, files: map[string]*file{}, skipped: map[string]int{}, busy: map[string]bool{}}
+	a := &Adapter{
+		opts: opts, skip: skip,
+		files: map[string]*file{}, skipped: map[string]int{}, busy: map[string]bool{}, draining: map[string]bool{},
+	}
+	a.relay = &relay{
+		start: opts.StartRelay, dir: opts.RelayDir, args: relayArgs(opts.RelayModel),
+		timeout: opts.RelayTimeout, noticeWait: opts.NoticeWait, idle: opts.RelayIdle,
+		onNotice: a.notice,
+	}
+	return a
+}
+
+// Close stops the relay, if it is running. Messages still queued for open
+// sessions are dropped with it.
+func (a *Adapter) Close() error {
+	a.relay.shutdown()
+	return nil
 }
 
 // Kind implements adapter.Adapter.
@@ -214,21 +302,31 @@ func (a *Adapter) refresh() error {
 // view is one session's derived state at a moment.
 type view struct {
 	f        *file
-	live     bool
+	live     bool         // open somewhere: lasso mustn't resume it
+	ses      *liveSession // Claude Code's own record of it, when open
+	unique   bool         // ses's name is the only running session with that name
 	state    adapter.State
 	prompt   *openTool // the prompt it's stopped at, if any
 	asking   bool      // prompt is a question, not a permission prompt
 	writable bool
 }
 
-// views refreshes and derives every listed session's state. Caller holds a.mu.
+// views refreshes and derives every listed session's state, and sends
+// whatever was waiting for a session that has since closed. Caller holds
+// a.mu.
 func (a *Adapter) views() ([]view, error) {
 	if err := a.refresh(); err != nil {
 		return nil, err
 	}
+	ls := readLive(a.opts.SessionsDir, a.opts.Alive)
 	ps, err := a.opts.Procs()
 	if err != nil {
-		ps = nil // can't see processes: fall back to file times alone
+		ps = nil // can't see processes: fall back to the files alone
+	}
+	if ls.ok {
+		// Processes Claude Code already lists are matched by session id
+		// below; only the rest (an older claude) need the guesswork.
+		ps = slices.DeleteFunc(slices.Clone(ps), func(p Proc) bool { return ls.pids[p.PID] })
 	}
 	byID, byCwd := liveSets(ps)
 	newest := map[string]*file{} // per cwd, the session a bare `claude` there is in
@@ -243,9 +341,15 @@ func (a *Adapter) views() ([]view, error) {
 		if f.cwd == "" || f.ignored {
 			continue
 		}
-		proc := byID[f.id] || byCwd[f.cwd] && newest[f.cwd] == f
+		v := view{f: f}
+		if s, ok := ls.byID[f.id]; ok {
+			v.ses, v.unique = &s, s.Name != "" && ls.byName[s.Name] == 1
+		}
+		proc := v.ses != nil || byID[f.id] || byCwd[f.cwd] && newest[f.cwd] == f
 		quiet := now.Sub(f.mtime)
-		v := view{f: f, live: quiet < a.opts.LiveWindow || proc || a.busy[f.id]}
+		// Claude Code's own list is the truth when it keeps one; without
+		// it, a recently written transcript is taken to be open.
+		v.live = proc || a.busy[f.id] || a.draining[f.id] || !ls.ok && quiet < a.opts.LiveWindow
 		for _, o := range f.open {
 			if o.name == toolAsk {
 				v.prompt, v.asking = o, true
@@ -261,19 +365,29 @@ func (a *Adapter) views() ([]view, error) {
 			v.prompt, v.asking = nil, false // its process is gone: nobody is asking any more
 		}
 		switch {
-		case a.busy[f.id]:
+		case a.busy[f.id] || a.draining[f.id]:
 			v.state = adapter.Running
 		case v.prompt != nil:
 			v.state = adapter.Waiting
+		case v.ses != nil && v.ses.Status != "":
+			if v.ses.busy() {
+				v.state = adapter.Running
+			} else {
+				v.state = adapter.Idle
+			}
 		case v.live && f.turnOpen():
 			v.state = adapter.Running
 		default:
 			v.state = adapter.Idle
 		}
-		v.writable = !v.live && dirExists(f.cwd)
+		// Open or not, lasso can take a message: the relay passes it on,
+		// or it waits for the session to close.
+		v.writable = dirExists(f.cwd)
 		out = append(out, v)
 	}
 	slices.SortFunc(out, func(x, y view) int { return y.f.mtime.Compare(x.f.mtime) })
+	a.flush(out)
+	a.verify()
 	return out, nil
 }
 
@@ -284,7 +398,6 @@ func longRunning(name string) bool {
 }
 
 // Sessions implements adapter.Adapter: recent sessions, newest first.
-// Live ones aren't writable.
 func (a *Adapter) Sessions(context.Context) ([]adapter.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -312,7 +425,8 @@ type cursor struct {
 
 // Events implements adapter.Adapter. A zero cursor means what's waiting:
 // the prompts sessions are stopped at, and the last turn of each session
-// touched in the past day. Replies to Send come once, with the next call,
+// touched in the past day. Replies to Send, and lasso's notes about
+// messages it is holding or has passed on, come once, with the next call,
 // whatever the cursor.
 func (a *Adapter) Events(_ context.Context, since adapter.Cursor) ([]adapter.Event, adapter.Cursor, error) {
 	a.mu.Lock()
@@ -395,77 +509,6 @@ func promptEvent(session string, o *openTool, asking bool, fallback time.Time) a
 	}
 	ev.Text = adapter.Untrusted(attention.Gloss(text))
 	return ev
-}
-
-// errLive is Send's error for a session that's running.
-var errLive = fmt.Errorf("claude: %w: can't send while it's running; it takes messages once it has been idle for a couple of minutes", adapter.ErrReadOnly)
-
-// Send implements adapter.Adapter for idle sessions: it resumes the
-// session headless in its own directory with text as the next message,
-// and the reply comes back as an event.
-func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
-	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(text) == "" {
-		return errors.New("claude: send needs a session and some text")
-	}
-	a.mu.Lock()
-	vs, err := a.views()
-	if err != nil {
-		a.mu.Unlock()
-		return fmt.Errorf("claude: %w", err)
-	}
-	i := slices.IndexFunc(vs, func(v view) bool { return v.f.id == sessionID })
-	if i < 0 {
-		a.mu.Unlock()
-		return fmt.Errorf("claude: no session %q", sessionID)
-	}
-	v := vs[i]
-	if v.live {
-		a.mu.Unlock()
-		return errLive
-	}
-	if !v.writable {
-		a.mu.Unlock()
-		return fmt.Errorf("claude: %w: its directory %s is gone", adapter.ErrReadOnly, v.f.cwd)
-	}
-	f, dir := v.f, v.f.cwd
-	a.busy[sessionID] = true
-	f.sent[text]++ // its transcript turn is the reply event below
-	a.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(ctx, a.opts.SendTimeout)
-	defer cancel()
-	arg := text
-	if strings.HasPrefix(arg, "-") {
-		arg = " " + arg // never read as a flag
-	}
-	out, runErr := a.opts.Run(ctx, dir, "-p", "--resume", sessionID, arg)
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	delete(a.busy, sessionID)
-	_ = a.refresh()
-	f = a.files[sessionID]
-	if f == nil {
-		f = v.f
-	}
-	if runErr != nil {
-		if f.sent[text] > 0 {
-			f.sent[text]--
-		}
-		return fmt.Errorf("claude: resuming %s: %w", sessionID, runErr)
-	}
-	reply := strings.TrimSpace(string(out))
-	if reply == "" {
-		reply = "(no reply)"
-	}
-	a.replies = append(a.replies, f.event("reply:"+randomID(), clip(reply, clipText), a.opts.Now()))
-	return nil
-}
-
-// Answer implements adapter.Adapter. Claude Code's prompts are answered in
-// Claude Code itself until the live-session spike (#9) finds a way in.
-func (a *Adapter) Answer(context.Context, string, adapter.Choice) error {
-	return fmt.Errorf("claude: %w: answer Claude Code's prompts in its own window; lasso can't reach them yet", adapter.ErrReadOnly)
 }
 
 // run is the real Runner: the claude on PATH.

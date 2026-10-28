@@ -2,9 +2,11 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +20,9 @@ var now = time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 
 type env struct {
 	root, cwd, lasso, home string
+	sessions, relayDir     string // Claude Code's sessions directory; the relay's directory
 	procs                  []Proc
+	relay                  RelayStarter // nil: starting the relay fails
 }
 
 // setup lays the synthetic fixtures out as Claude Code does, with their
@@ -33,6 +37,9 @@ func setup(t *testing.T) *env {
 		cwd:   filepath.Join(base, "w", "app"),
 		lasso: filepath.Join(base, "lasso"),
 		home:  filepath.Join(base, "home"),
+
+		sessions: filepath.Join(base, "sessions"),
+		relayDir: filepath.Join(base, "relay"),
 	}
 	proj := filepath.Join(e.root, strings.ReplaceAll(e.cwd, string(filepath.Separator), "-"))
 	for _, d := range []string{proj, e.cwd, e.lasso, e.home} {
@@ -70,12 +77,69 @@ func setup(t *testing.T) *env {
 
 func (e *env) adapter(t *testing.T, run Runner) *Adapter {
 	t.Helper()
-	return New(Options{
+	start := e.relay
+	if start == nil {
+		start = func(string, ...string) (*RelayConn, error) { return nil, errors.New("no relay in this test") }
+	}
+	a := New(Options{
 		Root: e.root, Home: e.home, SkipDirs: []string{e.lasso},
-		Procs: func() ([]Proc, error) { return e.procs, nil },
-		Run:   run,
-		Now:   func() time.Time { return now },
+		SessionsDir: e.sessions, RelayDir: e.relayDir,
+		Procs:      func() ([]Proc, error) { return e.procs, nil },
+		Alive:      func(pid int) bool { return pid != deadPID },
+		Run:        run,
+		StartRelay: start,
+		Now:        func() time.Time { return now },
+		NoticeWait: 300 * time.Millisecond, VerifyWait: time.Second, RelayTimeout: 5 * time.Second,
 	})
+	t.Cleanup(func() { _ = a.Close() })
+	return a
+}
+
+// deadPID is a process that has gone, though its sessions file is still there.
+const deadPID = 99
+
+// live writes Claude Code's sessions file for a running session.
+func (e *env) live(t *testing.T, pid int, session, name, status, socket string) {
+	t.Helper()
+	if err := os.MkdirAll(e.sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]any{
+		"pid": pid, "sessionId": session, "cwd": e.cwd, "name": name, "kind": "interactive",
+		"status": status, "statusUpdatedAt": now.UnixMilli(), "messagingSocketPath": socket,
+	})
+	if err := os.WriteFile(filepath.Join(e.sessions, strconv.Itoa(pid)+".json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The key file beside it must never be read: make it unreadable.
+	_ = os.Remove(filepath.Join(e.sessions, strconv.Itoa(pid)+".abc.key"))
+	if err := os.WriteFile(filepath.Join(e.sessions, strconv.Itoa(pid)+".abc.key"), []byte("secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// closed removes a session's sessions file, as Claude Code does on exit.
+func (e *env) closed(t *testing.T, pid int) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(e.sessions, strconv.Itoa(pid)+".json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// liveness is whether each listed session is open, as the adapter sees it.
+func liveness(t *testing.T, a *Adapter) map[string]bool {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	vs, err := a.views()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]bool{}
+	for _, v := range vs {
+		m[v.f.id] = v.live
+	}
+	return m
 }
 
 func (e *env) path(id string) string {
@@ -103,8 +167,8 @@ func TestSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []adapter.Session{
-		{ID: "asking", Bot: "claude", Title: "Pick a database", State: adapter.Waiting},
-		{ID: "perm", Bot: "claude", Title: "Release prep", State: adapter.Waiting},
+		{ID: "asking", Bot: "claude", Title: "Pick a database", State: adapter.Waiting, Writable: true},
+		{ID: "perm", Bot: "claude", Title: "Release prep", State: adapter.Waiting, Writable: true},
 		{ID: "idle", Bot: "claude", Title: attention.Plain("Health check endpoint"), State: adapter.Idle,
 			PR: "https://github.com/o/app/pull/12", Writable: true},
 	}
@@ -135,14 +199,14 @@ func TestLiveness(t *testing.T) {
 	}
 	// No process: "perm" has been quiet ten minutes, so it's idle and
 	// writable; nobody is at its prompt any more.
-	if s := byID()["perm"]; s.State != adapter.Idle || !s.Writable {
-		t.Errorf("perm without a process = %+v, want idle and writable", s)
+	if s := byID()["perm"]; s.State != adapter.Idle || !s.Writable || liveness(t, a)["perm"] {
+		t.Errorf("perm without a process = %+v, want idle, closed and writable", s)
 	}
 	// A bare `claude` in that directory holds its newest session only.
 	e.procs = []Proc{{PID: 5, Cwd: e.cwd, Args: []string{"claude"}}}
 	m := byID()
-	if m["asking"].Writable || !m["perm"].Writable || !m["idle"].Writable {
-		t.Errorf("bare claude in cwd: %+v", m)
+	if l := liveness(t, a); !l["asking"] || l["perm"] || l["idle"] {
+		t.Errorf("bare claude in cwd: %+v", l)
 	}
 	// A recently written transcript is live without any process.
 	if m["asking"].State != adapter.Waiting {

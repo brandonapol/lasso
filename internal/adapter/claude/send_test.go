@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/brandonapol/lasso/internal/adapter"
 )
@@ -83,21 +86,93 @@ func TestSendFailureIsReported(t *testing.T) {
 	}
 }
 
-func TestSendRefusesLiveSessions(t *testing.T) {
-	e := setup(t)
-	ran := false
-	a := e.adapter(t, func(context.Context, string, ...string) ([]byte, error) { ran = true; return nil, nil })
-	for _, id := range []string{"asking", "perm"} {
-		err := a.Send(context.Background(), id, "hello")
-		if !errors.Is(err, adapter.ErrReadOnly) || !strings.Contains(err.Error(), "can't send while it's running") {
-			t.Errorf("send to live %s = %v", id, err)
+// recorder is a Runner that records each resume, in order.
+type recorder struct {
+	mu   sync.Mutex
+	runs [][]string
+}
+
+func (r *recorder) run(_ context.Context, dir string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runs = append(r.runs, append([]string{dir}, args...))
+	return []byte("ok"), nil
+}
+
+func (r *recorder) got() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.runs)
+}
+
+// waitFor polls until cond holds, poking the adapter so it notices closed
+// sessions.
+func waitFor(t *testing.T, a *Adapter, what string, cond func() bool) {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if _, err := a.Sessions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if cond() {
+			return
 		}
 	}
-	if err := a.Send(context.Background(), "worker", "hello"); err == nil || errors.Is(err, adapter.ErrReadOnly) {
-		t.Errorf("send to saddle's worker = %v, want no such session", err)
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// Without Claude Code's sessions files (an older Claude Code) lasso can't
+// reach an open session, so the message waits for its process to exit.
+func TestSendQueuesUntilTheSessionCloses(t *testing.T) {
+	e := setup(t)
+	rec := &recorder{}
+	a := e.adapter(t, rec.run)
+	ctx := context.Background()
+	for _, text := range []string{"first", "second"} {
+		if err := a.Send(ctx, "perm", text); err != nil {
+			t.Fatalf("send to open perm = %v, want it queued", err)
+		}
 	}
-	if ran {
-		t.Error("claude ran for a session lasso can't write to")
+	if err := a.Send(ctx, "asking", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _, err := a.Events(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, ev := range evs {
+		if strings.HasPrefix(ev.ID, "lasso:") {
+			notes++
+			if !strings.Contains(string(ev.Text), "waiting until that session closes") {
+				t.Errorf("note = %q", ev.Text)
+			}
+		}
+	}
+	if notes != 3 {
+		t.Errorf("got %d notes, want one per queued message: %+v", notes, evs)
+	}
+	if n := len(rec.got()); n != 0 {
+		t.Fatalf("resumed %d times while the sessions were open", n)
+	}
+
+	// perm's process exits: its messages go out by resume, in order.
+	// "asking" is still open (written to a moment ago), so it waits.
+	e.procs = nil
+	waitFor(t, a, "perm's queue to go out", func() bool { return len(rec.got()) == 2 })
+	runs := rec.got()
+	for i, want := range []string{"first", "second"} {
+		r := runs[i]
+		if r[0] != e.cwd || r[1] != "-p" || r[2] != "--resume" || r[3] != "perm" || r[4] != want {
+			t.Errorf("run %d = %q", i, r)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := len(rec.got()); n != 2 {
+		t.Errorf("resumed %d times; the still-open session was resumed", n)
+	}
+
+	if err := a.Send(ctx, "worker", "hello"); err == nil || errors.Is(err, adapter.ErrReadOnly) {
+		t.Errorf("send to saddle's worker = %v, want no such session", err)
 	}
 }
 
