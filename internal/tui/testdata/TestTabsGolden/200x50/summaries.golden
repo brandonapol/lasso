@@ -1,9 +1,9 @@
  ◆ lasso   brandonapol/lasso  brandonapol/saddle                                                                                                                                                 ● live 
  assistant                            │ 1 Issues   2 Actions   3 In progress   4 Summaries                                                               │ focus                                        
                                       │────────────────────────────────────────━━━━━━━━━━━───────────────────────────────────────────────────────────────│                                              
- The assistant isn't here yet (#12).  │ the last 24 hours in each hot repo · g regenerate                                                                │ lasso, last 24h                              
- When it is, your bots' news and your │                                                                                                                  │ brandonapol/lasso · written by claude-       
- replies to them show here.           │ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │ sonnet-5-5 · updated 55m ago                 
+ Since you left, CI on main failed.   │ the last 24 hours in each hot repo · g regenerate                                                                │ lasso, last 24h                              
+                                      │                                                                                                                  │ brandonapol/lasso · written by claude-       
+                                      │ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │ sonnet-5-5 · updated 55m ago                 
                                       │ │ brandonapol/lasso                                                                               g regenerate │ │                                              
                                       │ │ Three pull requests merged: the API skeleton, the GitHub poller and the attention levels. The TUI is in      │ │ Three pull requests merged: the API          
                                       │ │ progress and CI is red on a formatting slip (walrus).                                                        │ │ skeleton, the GitHub poller and the          
@@ -46,5 +46,5 @@
                                       │                                                                                                                  │                                              
                                       │                                                                                                                  │                                              
 ──────────────────────────────────────│                                                                                                                  │                                              
- › talk to your bots                  │                                                                                                                  │ o open on GitHub   ? explain   g regenerate  
+ › ask lasso                          │                                                                                                                  │ o open on GitHub   ? explain   g regenerate  
  tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                                                                                                                      

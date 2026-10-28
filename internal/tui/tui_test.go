@@ -57,18 +57,54 @@ func seed(src *api.FakeSource) {
 
 type harness struct {
 	src    *api.FakeSource
+	hub    *api.Hub
+	chat   *fakeChat
 	client *Client
 	opened []string
 	mu     sync.Mutex
+}
+
+// sinceYouLeft is what the fake assistant says when the TUI opens; golden
+// tests wait for it so the left pane is settled.
+const sinceYouLeft = "Since you left, CI on main failed."
+
+// fakeChat is an assistant that echoes.
+type fakeChat struct {
+	mu   sync.Mutex
+	msgs []api.ChatMessage
+}
+
+func (f *fakeChat) History(context.Context) ([]api.ChatMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]api.ChatMessage(nil), f.msgs...), nil
+}
+
+func (f *fakeChat) Send(_ context.Context, text string) ([]api.ChatMessage, error) {
+	f.mu.Lock()
+	f.msgs = append(f.msgs, api.ChatMessage{Role: api.RoleUser, Text: text, At: now},
+		api.ChatMessage{Role: api.RoleLasso, Text: "You said: " + text, At: now})
+	f.mu.Unlock()
+	return f.History(context.Background())
+}
+
+func (f *fakeChat) Open(context.Context) ([]api.ChatMessage, error) {
+	f.mu.Lock()
+	if len(f.msgs) == 0 {
+		f.msgs = append(f.msgs, api.ChatMessage{Role: api.RoleLasso, Kind: "since_you_left", Text: sinceYouLeft, At: now})
+	}
+	f.mu.Unlock()
+	return f.History(context.Background())
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	src := api.NewFakeSource()
 	seed(src)
-	srv := httptest.NewServer(api.Handler(src, api.Options{Token: token, Port: 7337, KeepAlive: time.Hour}))
+	hub, chat := api.NewHub(), &fakeChat{}
+	srv := httptest.NewServer(api.Handler(src, api.Options{Token: token, Port: 7337, KeepAlive: time.Hour, Hub: hub, Chat: chat}))
 	t.Cleanup(srv.Close)
-	return &harness{src: src, client: NewClient(srv.URL, token, nil)}
+	return &harness{src: src, hub: hub, chat: chat, client: NewClient(srv.URL, token, nil)}
 }
 
 func (h *harness) model(t *testing.T) *Model {
@@ -178,7 +214,7 @@ func TestTabsGolden(t *testing.T) {
 				tm := start(t, h.model(t), size[0], size[1])
 				waitFor(t, tm, "live")
 				keys(tm, tab.key)
-				want := append([]string{}, tab.rows...)
+				want := append([]string{sinceYouLeft}, tab.rows...)
 				if size[0] >= wideWidth {
 					want = append(want, tab.focus)
 				}
@@ -228,7 +264,7 @@ func TestSelectionShowsFocus(t *testing.T) {
 func TestNarrowFocusOverlay(t *testing.T) {
 	h := newHarness(t)
 	tm := start(t, h.model(t), 100, 30)
-	waitFor(t, tm, "live", "Due dates from Projects")
+	waitFor(t, tm, "live", "Due dates from Projects", sinceYouLeft)
 	keys(tm, "enter")
 	waitFor(t, tm, "zebra")
 	m := finish(t, tm)
@@ -334,5 +370,37 @@ func TestParseBody(t *testing.T) {
 	want := []section{{"", "intro"}, {"One", "first"}, {"Two", "second"}}
 	if fmt.Sprint(secs) != fmt.Sprint(want) {
 		t.Fatalf("sections = %v", secs)
+	}
+}
+
+func TestChatSendsAndShowsReply(t *testing.T) {
+	h := newHarness(t)
+	tm := start(t, h.model(t), 200, 50)
+	waitFor(t, tm, "live", sinceYouLeft)
+	tm.Send(tea.KeyMsg{Type: tea.KeyShiftTab}) // list → assistant
+	keys(tm, "what's due?", "enter")
+	waitFor(t, tm, "You said: what's due?")
+	keys(tm, "esc")
+	m := finish(t, tm)
+	if len(m.chat) != 3 || m.pending != "" || m.chat[0].Text != sinceYouLeft {
+		t.Fatalf("chat = %+v pending %q", m.chat, m.pending)
+	}
+}
+
+func TestAssistantFocusMovesRightPane(t *testing.T) {
+	h := newHarness(t)
+	tm := start(t, h.model(t), 200, 50)
+	waitFor(t, tm, "live", "zebra", sinceYouLeft)
+	h.hub.Publish(api.Event{Kind: api.EventFocus, Data: map[string]string{"id": "run:saddle:552", "tab": "actions"}})
+	waitFor(t, tm, "otter")
+	// A chat update from the daemon (a line-jumper) is read and shown.
+	h.chat.mu.Lock()
+	h.chat.msgs = append(h.chat.msgs, api.ChatMessage{Role: api.RoleLasso, Kind: "line_jumper", Text: "grok has been waiting on you for 3 hours.", At: now})
+	h.chat.mu.Unlock()
+	h.hub.Publish(api.Event{Kind: api.EventChatUpdated, Data: map[string]int{"messages": 2}})
+	waitFor(t, tm, "waiting on you")
+	m := finish(t, tm)
+	if m.tab != 1 || m.focusID != "run:saddle:552" {
+		t.Fatalf("tab=%d focus=%s", m.tab, m.focusID)
 	}
 }

@@ -35,6 +35,11 @@ type Options struct {
 	// Actions runs POST /actions (rules check, audit write, adapter call).
 	// Nil answers 501.
 	Actions Actions
+	// Chat is the agent pane behind GET/POST /chat. Nil answers 501.
+	Chat Chat
+	// Hub carries the API's own events (focus requests, chat updates) to
+	// GET /events. Nil makes a private one.
+	Hub *Hub
 }
 
 // Actions is what POST /actions and POST /actions/{id}/undo call;
@@ -139,19 +144,25 @@ func Handler(src Source, opts Options) http.Handler {
 			writeOutcome(w, out, err)
 		})
 	}
+	if opts.Hub == nil {
+		opts.Hub = NewHub()
+	}
+	chatRoutes(mux, src, opts.Chat, opts.Hub)
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
-		serveEvents(w, r, src, opts.KeepAlive)
+		serveEvents(w, r, src, opts.Hub, opts.KeepAlive)
 	})
 	tokens := map[Caller]string{CallerUser: opts.Token, CallerAgent: opts.AgentToken}
 	return guard(mux, tokens, opts.Port, map[string]bool{"/healthz": true})
 }
 
-// serveEvents streams src's changes as Server-Sent Events until the client
-// goes away or the source drops it.
-func serveEvents(w http.ResponseWriter, r *http.Request, src Source, keepAlive time.Duration) {
+// serveEvents streams src's and hub's events as Server-Sent Events until
+// the client goes away or either drops it.
+func serveEvents(w http.ResponseWriter, r *http.Request, src Source, hub *Hub, keepAlive time.Duration) {
 	rc := http.NewResponseController(w)
 	ch, stop := src.Subscribe()
 	defer stop()
+	hch, hstop := hub.Subscribe()
+	defer hstop()
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -170,19 +181,27 @@ func serveEvents(w http.ResponseWriter, r *http.Request, src Source, keepAlive t
 		case <-tick.C:
 			fmt.Fprint(w, ": keep-alive\n\n")
 		case ev, ok := <-ch:
-			if !ok {
+			if !ok || writeEvent(w, ev) != nil {
 				return
 			}
-			data, err := json.Marshal(ev.Data)
-			if err != nil {
+		case ev, ok := <-hch:
+			if !ok || writeEvent(w, ev) != nil {
 				return
 			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Kind, data)
 		}
 		if err := rc.Flush(); err != nil {
 			return
 		}
 	}
+}
+
+func writeEvent(w http.ResponseWriter, ev Event) error {
+	data, err := json.Marshal(ev.Data)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Kind, data)
+	return err
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

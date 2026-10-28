@@ -225,9 +225,17 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		agentToken = hex.EncodeToString(buf)
 	}
+	hub := api.NewHub()
+	chat, stopChat, err := startAgentPane(ctx, opts, addr.Port, agentToken, hub)
+	if err != nil {
+		return fmt.Errorf("lasso serve: %w", err)
+	}
+	defer stopChat()
 
 	srv := &http.Server{
-		Handler:           api.Handler(src, api.Options{Token: token, AgentToken: agentToken, Port: addr.Port, Actions: acts}),
+		Handler: api.Handler(src, api.Options{
+			Token: token, AgentToken: agentToken, Port: addr.Port, Actions: acts, Chat: chat, Hub: hub,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Request contexts end with ctx, so open event streams close on
 		// shutdown instead of holding it up.

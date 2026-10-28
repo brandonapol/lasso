@@ -87,6 +87,15 @@ type Model struct {
 	connected bool
 	dropped   bool
 
+	// The assistant's conversation, as the daemon keeps it.
+	chat    []api.ChatMessage
+	chatErr string
+	// pending is the message being answered, shown until the reply lands.
+	pending string
+	// pendingFocus is an item the assistant asked to show that wasn't
+	// loaded yet; it is selected when its tab's rows arrive.
+	pendingFocus string
+
 	events chan tea.Msg
 }
 
@@ -106,7 +115,7 @@ func New(opts Options) *Model {
 	}
 	in := textinput.New()
 	in.Prompt = "› "
-	in.Placeholder = "talk to your bots"
+	in.Placeholder = "ask lasso"
 	_ = in.Cursor.SetMode(cursor.CursorStatic)
 	se := textinput.New()
 	se.Prompt = "/ "
@@ -135,6 +144,12 @@ type (
 		f   api.Focus
 		err error
 	}
+	chatMsg struct {
+		msgs []api.ChatMessage
+		err  error
+		// reply is true for the answer to the user's message.
+		reply bool
+	}
 	eventMsg     struct{ ev Event }
 	connectedMsg struct{}
 	droppedMsg   struct{ err error }
@@ -144,7 +159,7 @@ type (
 
 // Init fetches every tab and opens the event stream.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.connect(), m.waitEvent()}
+	cmds := []tea.Cmd{m.connect(), m.waitEvent(), m.openChat()}
 	for i := range api.Tabs {
 		cmds = append(cmds, m.fetchItems(i))
 	}
@@ -165,6 +180,42 @@ func (m *Model) fetchFocus(id string) tea.Cmd {
 		f, err := c.Focus(ctx, id)
 		return focusMsg{id: id, f: f, err: err}
 	}
+}
+
+// openChat tells the assistant the TUI opened and reads the conversation.
+func (m *Model) openChat() tea.Cmd {
+	c, ctx := m.opt.Client, m.ctx
+	return func() tea.Msg {
+		msgs, err := c.OpenChat(ctx)
+		return chatMsg{msgs: msgs, err: err}
+	}
+}
+
+func (m *Model) fetchChat() tea.Cmd {
+	c, ctx := m.opt.Client, m.ctx
+	return func() tea.Msg {
+		msgs, err := c.Chat(ctx)
+		return chatMsg{msgs: msgs, err: err}
+	}
+}
+
+func (m *Model) sendChat(text string) tea.Cmd {
+	c, ctx := m.opt.Client, m.ctx
+	return func() tea.Msg {
+		msgs, err := c.SendChat(ctx, text)
+		return chatMsg{msgs: msgs, err: err, reply: true}
+	}
+}
+
+func (m *Model) gotChat(msg chatMsg) {
+	if msg.reply {
+		m.pending = ""
+	}
+	if msg.err != nil {
+		m.chatErr = msg.err.Error()
+		return
+	}
+	m.chat, m.chatErr = msg.msgs, ""
 }
 
 // connect starts one event-stream reader. It feeds m.events and ends with a
@@ -243,6 +294,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.connect()
+	case chatMsg:
+		m.gotChat(msg)
+		return m, nil
 	case eventMsg:
 		return m, tea.Batch(m.gotEvent(msg.ev), m.waitEvent())
 	case statusMsg:
@@ -272,6 +326,9 @@ func (m *Model) gotItems(msg itemsMsg) tea.Cmd {
 		}
 	}
 	m.clamp(msg.tab)
+	if m.pendingFocus != "" && msg.tab == m.tab && m.selectID(m.pendingFocus) {
+		m.pendingFocus = ""
+	}
 	var cmds []tea.Cmd
 	if msg.tab == tabSummaries {
 		// Summary cards show their bodies inline.
@@ -323,9 +380,56 @@ func (m *Model) gotEvent(ev Event) tea.Cmd {
 			}
 		}
 		return tea.Batch(cmds...)
+	case api.EventChatUpdated:
+		return m.fetchChat()
+	case api.EventFocus:
+		var d struct {
+			ID  string  `json:"id"`
+			Tab api.Tab `json:"tab"`
+		}
+		if json.Unmarshal(ev.Data, &d) != nil {
+			return nil
+		}
+		return m.focusOn(d.ID, d.Tab)
 	}
-	// brief.updated belongs to the assistant pane (#12).
+	// brief.updated needs nothing here: the assistant writes "since you
+	// left" when the TUI opens.
 	return nil
+}
+
+// focusOn moves the middle and right panes to one item, as the assistant
+// asked. The pane the user is typing in keeps the keyboard.
+func (m *Model) focusOn(id string, tab api.Tab) tea.Cmd {
+	t := tabIndex(tab)
+	if t < 0 || id == "" {
+		return nil
+	}
+	m.overlay = ""
+	if m.searching || m.search.Value() != "" {
+		m.searching = false
+		m.search.Blur()
+		m.search.SetValue("")
+	}
+	m.tab = t
+	if !m.selectID(id) {
+		// Not loaded yet: select it when its rows arrive.
+		m.pendingFocus = id
+		return m.fetchItems(t)
+	}
+	m.pendingFocus = ""
+	return m.refocus(false)
+}
+
+// selectID selects id on the current tab, if it is there.
+func (m *Model) selectID(id string) bool {
+	for i, it := range m.visible(m.tab) {
+		if it.ID == id {
+			m.sel[m.tab] = i
+			m.clamp(m.tab)
+			return true
+		}
+	}
+	return false
 }
 
 func tabIndex(t api.Tab) int {
@@ -464,10 +568,17 @@ func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 		switch k {
 		case "tab", "shift+tab", "esc":
 		case "enter":
-			if strings.TrimSpace(m.input.Value()) != "" {
-				m.status = "the assistant isn't built yet (#12); nothing was sent"
+			text := strings.TrimSpace(m.input.Value())
+			if text == "" {
+				return nil
 			}
-			return nil
+			if m.pending != "" {
+				m.status = "still answering your last message"
+				return nil
+			}
+			m.pending = text
+			m.input.SetValue("")
+			return m.sendChat(text)
 		default:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)

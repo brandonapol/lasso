@@ -1,9 +1,9 @@
  ◆ lasso   brandonapol/lasso  brandonapol/saddle                                             ● live 
  assistant                            │ 1 Issues   2 Actions   3 In progress   4 Summaries          
                                       │────────────━━━━━━━━━────────────────────────────────────────
- The assistant isn't here yet (#12).  │ workflow runs in your hot repos                             
- When it is, your bots' news and your │                                                             
- replies to them show here.           │▌ ci · main                                           failed 
+ Since you left, CI on main failed.   │ workflow runs in your hot repos                             
+                                      │                                                             
+                                      │▌ ci · main                                           failed 
                                       │▌ brandonapol/lasso · updated 12m ago                        
                                       │                                                             
                                       │  release · v0.4.0                                    passed 
@@ -26,5 +26,5 @@
                                       │                                                             
                                       │                                                             
 ──────────────────────────────────────│                                                             
- › talk to your bots                  │                                                             
+ › ask lasso                          │                                                             
  tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                  
