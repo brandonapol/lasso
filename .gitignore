@@ -2,3 +2,4 @@
 /lasso
 *.db
 *.db-*
+/.claude/
