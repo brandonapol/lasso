@@ -189,11 +189,15 @@ func TestEvents(t *testing.T) {
 	ch, stop := s.Subscribe()
 	defer stop()
 
-	// Nothing changed: a poll is silent.
+	// Nothing changed: a poll sends only the new sync time.
 	clk.now = clk.now.Add(github.IssuesEvery)
 	s.Step(ctx)
-	if evs := collect(ch); len(evs) != 0 {
+	evs := collect(ch)
+	if len(evs) != 1 || evs[0].Kind != api.EventStatusChanged {
 		t.Fatalf("quiet poll sent %v", evs)
+	}
+	if st := evs[0].Data.(api.Status); st.GitHubSynced == nil || !st.GitHubSynced.Equal(clk.now) {
+		t.Fatalf("status = %+v", st)
 	}
 
 	a := gh.repo(repoA)
@@ -201,7 +205,7 @@ func TestEvents(t *testing.T) {
 	a.issues = a.issues[:2] // #3 closed
 	clk.now = clk.now.Add(github.IssuesEvery)
 	s.Step(ctx)
-	evs := collect(ch)
+	evs = collect(ch)
 	if got := eventIDs(evs, api.EventItemChanged); strings.Join(got, " ") != "issue:o:a:1" {
 		t.Errorf("item.changed: %q", got)
 	}

@@ -87,6 +87,9 @@ type Source struct {
 	suggested  map[string]rules.Suggestion // by id, as first offered
 	suggestErr string
 	lastBots   time.Time
+	// synced is when a hot repo was last read from GitHub without an
+	// error, owned by the polling goroutine.
+	synced time.Time
 
 	// Bot state: written by the polling goroutine, and by Report and
 	// Resolve from any goroutine.
@@ -109,7 +112,9 @@ type Source struct {
 	mu    sync.Mutex
 	rows  map[string]row
 	brief string // key of the last published "since you left" set
-	subs  map[chan api.Event]struct{}
+	// status is the header's status, as last published.
+	status api.Status
+	subs   map[chan api.Event]struct{}
 }
 
 type levelMemo struct {
@@ -227,6 +232,9 @@ func (s *Source) Step(ctx context.Context) time.Time {
 		next, err := s.pollers[repo].Poll(ctx)
 		if ctx.Err() == nil {
 			s.settle(repo, s.called, err)
+			if err == nil && len(s.called) > 0 {
+				s.synced = s.opts.Clock.Now()
+			}
 		}
 		if next.Before(soonest) {
 			soonest = next
@@ -312,6 +320,7 @@ func (s *Source) refresh(ctx context.Context) {
 	}
 	brief := attention.SinceYouLeft(items, cursor)
 	key := briefKey(brief)
+	st := s.buildStatus()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -330,6 +339,50 @@ func (s *Source) refresh(ctx context.Context) {
 		s.brief = key
 		s.publish(api.Event{Kind: api.EventBriefUpdated, Data: briefData(brief)})
 	}
+	// After the rows, so a client that sees GitHub's first sync has
+	// already seen the rows it brought.
+	if !reflect.DeepEqual(st, s.status) {
+		s.status = st
+		s.publish(api.Event{Kind: api.EventStatusChanged, Data: st})
+	}
+}
+
+// buildStatus is the header's status: each bot adapter's state and when
+// GitHub was last read.
+func (s *Source) buildStatus() api.Status {
+	st := api.Status{Bots: []api.BotStatus{}}
+	if !s.synced.IsZero() {
+		t := s.synced
+		st.GitHubSynced = &t
+	}
+	s.botMu.Lock()
+	defer s.botMu.Unlock()
+	for _, a := range s.opts.Adapters {
+		kind := a.Kind()
+		sess := s.sessions[kind]
+		b := api.BotStatus{Kind: kind, Count: len(sess), State: api.BotIdle}
+		for _, se := range sess {
+			switch {
+			case se.State == adapter.Waiting:
+				b.State = api.BotWaiting
+			case se.State == adapter.Running && b.State == api.BotIdle:
+				b.State = api.BotWorking
+			}
+		}
+		if s.problems[kind].text() != "" {
+			b.State = api.BotUnreachable
+		}
+		st.Bots = append(st.Bots, b)
+	}
+	sort.Slice(st.Bots, func(i, j int) bool { return st.Bots[i].Kind < st.Bots[j].Kind })
+	return st
+}
+
+// Status implements api.StatusSource.
+func (s *Source) Status(context.Context) (api.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status, nil
 }
 
 func sortedKeys[T any](m map[string]T) []string {

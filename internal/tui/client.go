@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/brandonapol/lasso/internal/api"
+	"github.com/brandonapol/lasso/internal/rules"
 )
 
 // Client talks to the daemon's local API (ADR 0001 §1). It is the TUI's only
@@ -49,24 +50,56 @@ func (c *Client) Focus(ctx context.Context, id string) (api.Focus, error) {
 	return f, err
 }
 
-// Action asks the daemon to take one action on an item, e.g. regenerate a
-// summary. The daemon decides whether it may.
-func (c *Client) Action(ctx context.Context, kind, id string) error {
-	body, err := json.Marshal(map[string]string{"kind": kind, "id": id})
+// Status returns the header's status: the bots and GitHub's last sync.
+func (c *Client) Status(ctx context.Context) (api.Status, error) {
+	var st api.Status
+	err := c.getJSON(ctx, "/status", &st)
+	return st, err
+}
+
+// Action sends one request to POST /actions, as the user: a focus pane
+// action's Request, sent as the daemon wrote it. It returns the outcome,
+// whose Detail (or Decision.Reason) says what happened in plain words.
+func (c *Client) Action(ctx context.Context, r rules.Request) (rules.Outcome, error) {
+	body, err := json.Marshal(r)
 	if err != nil {
-		return err
+		return rules.Outcome{}, err
 	}
 	req, err := c.request(ctx, "POST", "/actions", strings.NewReader(string(body)))
 	if err != nil {
-		return err
+		return rules.Outcome{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return rules.Outcome{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return statusErr(resp)
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var out rules.Outcome
+	jsonErr := json.Unmarshal(b, &out)
+	if resp.StatusCode/100 == 2 {
+		return out, jsonErr
+	}
+	// The daemon answers a refusal or failure with an outcome saying why;
+	// anything else is a one-line text reason.
+	msg := ""
+	if jsonErr == nil {
+		msg = first(out.Detail, out.Decision.Reason)
+	}
+	if msg == "" {
+		msg = first(strings.TrimSpace(string(b)), resp.Status)
+	}
+	return out, fmt.Errorf("%s", msg)
+}
+
+func first(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // Chat returns the assistant's conversation.

@@ -1,18 +1,18 @@
- ◆ lasso   brandonapol/lasso  brandonapol/saddle                                                                                                                                                 ● live 
+ ◆ lasso   brandonapol/lasso  brandonapol/saddle                                                                                       ● claude 2   ◉ grok 1   ○ saddle   github synced 4m ago   ● live 
  assistant                            │ 1 Issues   2 Actions   3 In progress   4 Summaries                                                               │ focus                                        
                                       │────────────────────────────────────────━━━━━━━━━━━───────────────────────────────────────────────────────────────│                                              
  Since you left, CI on main failed.   │ the last 24 hours in each hot repo · g regenerate                                                                │ lasso, last 24h                              
-                                      │                                                                                                                  │ brandonapol/lasso · written by claude-       
-                                      │ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │ sonnet-5-5 · updated 55m ago                 
-                                      │ │ brandonapol/lasso                                                                               g regenerate │ │                                              
+                                      │                                                                                                                  │ brandonapol/lasso · updated 55m ago          
+                                      │ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │                                              
+                                      │ │ brandonapol/lasso                                                                               g regenerate │ │ THE LAST 24 HOURS                            
                                       │ │ Three pull requests merged: the API skeleton, the GitHub poller and the attention levels. The TUI is in      │ │ Three pull requests merged: the API          
                                       │ │ progress and CI is red on a formatting slip (walrus).                                                        │ │ skeleton, the GitHub poller and the          
                                       │ │                                                                                                              │ │ attention levels. The TUI is in progress and 
                                       │ │ last 24h · written by claude-sonnet-5-5 at 14:05                                                             │ │ CI is red on a formatting slip (walrus).     
                                       │ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │                                              
-                                      │                                                                                                                  │                                              
-                                      │ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │                                              
-                                      │ │ brandonapol/saddle                                                                              g regenerate │ │                                              
+                                      │                                                                                                                  │ COUNTS                                       
+                                      │ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │ 3 pull requests merged (sum:lasso counts).   
+                                      │ │ brandonapol/saddle                                                                                           │ │                                              
                                       │ │ Quiet day. One release went out and an issue about lost claims after a crash was filed (badger).             │ │                                              
                                       │ │                                                                                                              │ │                                              
                                       │ │ last 24h · written by claude-sonnet-5-5 at 12:00                                                             │ │                                              
@@ -46,5 +46,5 @@
                                       │                                                                                                                  │                                              
                                       │                                                                                                                  │                                              
 ──────────────────────────────────────│                                                                                                                  │                                              
- › ask lasso                          │                                                                                                                  │ o open on GitHub   ? explain   g regenerate  
- tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                                                                                                                      
+ › ask lasso                          │                                                                                                                  │ g regenerate   o open on GitHub   ? explain  
+ tab next pane · 1–4 tabs · ↑↓ enter focus · / search · r rules · q quit                                                                                                                                

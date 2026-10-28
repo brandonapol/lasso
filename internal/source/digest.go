@@ -11,8 +11,13 @@ import (
 	"github.com/brandonapol/lasso/internal/api"
 	"github.com/brandonapol/lasso/internal/attention"
 	"github.com/brandonapol/lasso/internal/digest"
+	"github.com/brandonapol/lasso/internal/rules"
 	"github.com/brandonapol/lasso/internal/summary"
 )
+
+// regenerate is the request a summary's g key sends: the daemon writes a
+// new summary of the repo now (it isn't a rules action).
+const regenerate = "regenerate_summary"
 
 // The bots' chatter goes through the digest (ADR 0001 §7): every event a
 // bot adapter delivers is added to the Digester, and only what a bot waits
@@ -203,7 +208,7 @@ func (s *Source) digestItems() []attention.Item {
 func (s *Source) digestRows(add func(row)) {
 	for i, n := range s.opts.Notices {
 		add(row{group: 0, seq: -len(s.opts.Notices) + i, Focus: api.Focus{
-			Item: api.Item{ID: noticeID(n.ID), Tab: api.TabSummaries, Title: n.Title, Status: "setup", Updated: n.At},
+			Item: api.Item{ID: noticeID(n.ID), Tab: api.TabSummaries, Title: n.Title, Status: "setup", Updated: n.At, Body: n.Body},
 			Body: n.Body,
 		}})
 	}
@@ -228,9 +233,14 @@ func (s *Source) digestRows(add func(row)) {
 		if p.repo != "" {
 			fields = append(fields, api.Field{Name: "Repo", Value: p.repo})
 		}
+		from := p.bot
+		if p.session != "" {
+			from += " session " + p.session
+		}
 		add(row{group: 2, at: p.at, Focus: api.Focus{
-			Item:   api.Item{ID: p.id, Tab: api.TabSummaries, Repo: p.repo, Title: p.text, Status: status, Updated: p.at},
-			Fields: fields,
+			Item:     api.Item{ID: p.id, Tab: api.TabSummaries, Repo: p.repo, Title: p.text, Status: status, Updated: p.at},
+			Fields:   fields,
+			Sections: []api.Section{{Label: "Where it came from", Body: from + ": of its messages, " + p.dg.String() + " made the digest."}},
 		}})
 	}
 }
@@ -247,12 +257,15 @@ func (s *Source) summaryRows(add func(row)) {
 		case err != nil:
 			r.Title, r.Status = repo+": the summary can't be read", "error"
 			r.Body = "lasso couldn't read its saved summary of " + repo + ": " + err.Error() + "\n\nIt writes a new one within the hour."
+			r.Item.Body, r.Byline = r.Body, "couldn't read the saved summary"
 		case !ok:
 			r.Title, r.Status = repo+": no summary yet", "writing"
 			r.Body = "lasso writes a summary of each hot repo's last 24 hours once an hour. The first one for " + repo + " is on its way."
+			r.Item.Body, r.Byline = r.Body, "the first one is on its way"
 		default:
 			r.Focus = summaryFocus(sum, r.Focus)
 		}
+		r.Actions = []api.Action{{Key: "g", Label: "regenerate", Kind: regenerate, Request: &rules.Request{Action: regenerate, Repo: repo}}}
 		add(r)
 	}
 }
@@ -272,6 +285,23 @@ func summaryFocus(sum summary.Summary, f api.Focus) api.Focus {
 		f.Fields = append(f.Fields, api.Field{Name: "Who did the work", Value: sum.Who})
 	}
 	written := sum.WrittenAt.UTC().Format(time.RFC3339)
+	f.Sections = []api.Section{{Label: "The last 24 hours", Body: sum.Paragraph}}
+	if len(sum.Changes) > 0 {
+		var b strings.Builder
+		for i, ch := range sum.Changes {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			fmt.Fprintf(&b, "- %s %s", ch.Title, ch.URL)
+		}
+		f.Sections = append(f.Sections, api.Section{Label: "Biggest changes", Body: b.String()})
+	}
+	f.Sections = append(f.Sections, api.Section{Label: "Counts", Body: fmt.Sprintf(
+		"%d pull requests merged, %d issues closed, %d opened, %d releases, %d checks still failing.",
+		c.Merged, c.Closed, c.Opened, c.Releases, c.RedRuns)})
+	if sum.Who != "" {
+		f.Sections = append(f.Sections, api.Section{Label: "Who did the work", Body: sum.Who})
+	}
 	switch {
 	case sum.OverCap:
 		f.Status = "counts only: cap reached"
@@ -289,6 +319,14 @@ func summaryFocus(sum summary.Summary, f api.Focus) api.Focus {
 		f.Status = "written by " + sum.Model
 		f.Fields = append(f.Fields, api.Field{Name: "Written by", Value: sum.Model + ", at " + written})
 	}
+	f.Byline = f.Status
+	if sum.Local && sum.Note != "" {
+		f.Sections = append(f.Sections, api.Section{Label: "Why counts only", Body: sum.Note})
+	}
+	if sum.OverCap {
+		f.Take = "Today's spending cap for summaries is reached, so this is lasso's counts only. Raise [models] sonnet_daily_usd for more."
+	}
+	f.Item.Body = sum.Paragraph
 	f.Fields = append(f.Fields, api.Field{Name: "New summary", Value: "press g (at most once an hour on its own)"})
 	var b strings.Builder
 	b.WriteString(sum.Paragraph)
