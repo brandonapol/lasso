@@ -46,6 +46,10 @@ var migrations = []string{
 		usd REAL NOT NULL,
 		PRIMARY KEY (feature, day)
 	);`,
+	// The repo an answer was about, so a suggested rule can be drafted for
+	// that repo only.
+	`ALTER TABLE answers ADD COLUMN repo TEXT NOT NULL DEFAULT '';
+	CREATE INDEX answers_answered_at ON answers (answered_at);`,
 }
 
 // Open opens (creating if needed) the database at path and migrates it.
@@ -155,4 +159,48 @@ func (s *Store) AddSpend(feature, day string, usd float64) error {
 		ON CONFLICT(feature, day) DO UPDATE SET usd = usd + excluded.usd`,
 		feature, day, usd)
 	return err
+}
+
+// Answer is one answer the user gave a bot's prompt or request.
+type Answer struct {
+	PromptID string
+	Bot      string
+	Action   string
+	Choice   string
+	Repo     string
+	At       time.Time
+}
+
+// RecordAnswer stores an answer. Answering the same prompt again replaces
+// the earlier answer, so one prompt never counts twice.
+func (s *Store) RecordAnswer(a Answer) error {
+	if a.PromptID == "" {
+		return errors.New("store: an answer needs a prompt id")
+	}
+	_, err := s.DB.Exec(`INSERT INTO answers (prompt_id, bot, action, choice, repo, answered_at) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(prompt_id) DO UPDATE SET bot = excluded.bot, action = excluded.action,
+			choice = excluded.choice, repo = excluded.repo, answered_at = excluded.answered_at`,
+		a.PromptID, a.Bot, a.Action, a.Choice, a.Repo, a.At.UnixNano())
+	return err
+}
+
+// Answers returns the answers given at or after since, oldest first.
+func (s *Store) Answers(since time.Time) ([]Answer, error) {
+	rows, err := s.DB.Query(`SELECT prompt_id, bot, action, choice, repo, answered_at FROM answers
+		WHERE answered_at >= ? ORDER BY answered_at, prompt_id`, since.UnixNano())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Answer
+	for rows.Next() {
+		var a Answer
+		var at int64
+		if err := rows.Scan(&a.PromptID, &a.Bot, &a.Action, &a.Choice, &a.Repo, &at); err != nil {
+			return nil, err
+		}
+		a.At = time.Unix(0, at)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

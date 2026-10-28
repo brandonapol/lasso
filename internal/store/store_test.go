@@ -96,3 +96,31 @@ func TestSpendAddsUpPerFeatureAndDay(t *testing.T) {
 		t.Fatalf("jev spend = %v", usd)
 	}
 }
+
+func TestAnswersSince(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "lasso.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	for i, at := range []time.Time{now.Add(-8 * 24 * time.Hour), now.Add(-time.Hour), now} {
+		if err := s.RecordAnswer(Answer{PromptID: string(rune('a' + i)), Bot: "grok-scout", Action: "answer_prompt", Choice: "yes", Repo: "o/r", At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Answering prompt c again replaces it rather than adding a fourth.
+	if err := s.RecordAnswer(Answer{PromptID: "c", Bot: "grok-scout", Action: "answer_prompt", Choice: "no", At: now}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Answers(now.Add(-7 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].PromptID != "b" || got[0].Repo != "o/r" || !got[0].At.Equal(now.Add(-time.Hour)) || got[1].Choice != "no" {
+		t.Fatalf("answers = %+v", got)
+	}
+	if err := s.RecordAnswer(Answer{}); err == nil {
+		t.Fatal("an answer without a prompt id was stored")
+	}
+}

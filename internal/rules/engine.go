@@ -125,6 +125,34 @@ func (e *Engine) Do(ctx context.Context, req Request) (Outcome, error) {
 	return e.run(ctx, id, actorFor(dec.Rule), req.Bot, "", step, dec)
 }
 
+// UserActor is the audit actor for actions the user approved themselves.
+const UserActor = "user"
+
+// DoAsUser runs req as the user's own decision: the user is the approval,
+// so no rule is matched and the always-ask list doesn't stop it (it exists
+// to ask the user, who is the one asking). It is still written to the audit
+// log, with actor "user", before it is sent.
+//
+// Only call it for a request the authenticated user made (the TUI or web
+// view's token), never for one from a bot or the agent pane: those go
+// through Do.
+func (e *Engine) DoAsUser(ctx context.Context, req Request) (Outcome, error) {
+	if !req.Action.Valid() {
+		return Outcome{Decision: Decision{Reason: fmt.Sprintf("%q isn't an action lasso knows", req.Action)}}, ErrRefused
+	}
+	dec := Decision{Allowed: true, Reason: "You approved it."}
+	id := newID()
+	step := audit.Step{Action: string(req.Action), Target: req.Target, Args: req.Args}
+	if err := e.Log.Append(audit.Entry{
+		Time: e.Now(), ID: id, Actor: UserActor, Bot: req.Bot,
+		Action: step.Action, Target: step.Target, Args: step.Args, Result: audit.Started,
+		Detail: dec.Reason,
+	}); err != nil {
+		return Outcome{Decision: Decision{Reason: "Not done: lasso couldn't write the audit log, and it never acts without a record. " + err.Error()}}, fmt.Errorf("%w: %v", ErrAudit, err)
+	}
+	return e.run(ctx, id, UserActor, req.Bot, "", step, dec)
+}
+
 // run sends a step already recorded as started, then records its result.
 func (e *Engine) run(ctx context.Context, id, actor, bot, undoOf string, step audit.Step, dec Decision) (Outcome, error) {
 	done, err := e.Exec.Execute(ctx, step)
@@ -187,14 +215,14 @@ func (e *Engine) Undo(ctx context.Context, id string) (Outcome, error) {
 	}
 	uid := newID()
 	if err := e.Log.Append(audit.Entry{
-		Time: e.Now(), ID: uid, Actor: "user", Bot: last.Bot, UndoOf: id,
+		Time: e.Now(), ID: uid, Actor: UserActor, Bot: last.Bot, UndoOf: id,
 		Action: last.Undo.Action, Target: last.Undo.Target, Args: last.Undo.Args, Result: audit.Started,
 		Detail: "undo of " + id,
 	}); err != nil {
 		return Outcome{Detail: "Not undone: lasso couldn't write the audit log. " + err.Error()}, fmt.Errorf("%w: %v", ErrAudit, err)
 	}
 	dec := Decision{Allowed: true, Reason: "You asked to undo " + id + "."}
-	return e.run(ctx, uid, "user", last.Bot, id, *last.Undo, dec)
+	return e.run(ctx, uid, UserActor, last.Bot, id, *last.Undo, dec)
 }
 
 func newID() string {
