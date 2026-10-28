@@ -28,11 +28,11 @@ type factBot struct {
 	sent   []string // "session: text"
 }
 
-func (f *factBot) Send(_ context.Context, session, text string) error {
+func (f *factBot) Send(_ context.Context, session, text string) (adapter.Delivery, error) {
 	f.sendMu.Lock()
 	defer f.sendMu.Unlock()
 	f.sent = append(f.sent, session+": "+text)
-	return nil
+	return adapter.Sent, nil
 }
 
 func (f *factBot) messages() []string {

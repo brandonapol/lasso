@@ -69,10 +69,11 @@ func (x executor) Execute(ctx context.Context, step audit.Step) (rules.Done, err
 			return rules.Done{}, fmt.Errorf("the message is empty")
 		}
 		session := sessionOf(kind, step.Target)
-		if err := a.Send(ctx, session, text); err != nil {
+		d, err := a.Send(ctx, session, text)
+		if err != nil {
 			return rules.Done{}, err
 		}
-		return rules.Done{Detail: fmt.Sprintf("Sent your message to %s session %s.", kind, session)}, nil
+		return rules.Done{Detail: sendDetail(kind, session, d), Delivery: string(d)}, nil
 	case rules.AnswerPrompt:
 		choice, said, err := choiceOf(step.Args)
 		if err != nil {
@@ -84,6 +85,18 @@ func (x executor) Execute(ctx context.Context, step audit.Step) (rules.Done, err
 		return rules.Done{Detail: fmt.Sprintf("Answered %s's prompt %s with %s.", kind, step.Target, said)}, nil
 	}
 	return rules.Done{}, fmt.Errorf("lasso can't %s through %s yet", rules.Action(step.Action).Plain(), kind)
+}
+
+// sendDetail says what became of a message, in plain words: "sent" only
+// when the session has it.
+func sendDetail(kind, session string, d adapter.Delivery) string {
+	switch d {
+	case adapter.Held:
+		return fmt.Sprintf("Your message to %s session %s is waiting until that session closes; lasso sends it then.", kind, session)
+	case adapter.HeldForApproval:
+		return fmt.Sprintf("Your message reached %s session %s, which is holding it until you approve it there.", kind, session)
+	}
+	return fmt.Sprintf("Sent your message to %s session %s.", kind, session)
 }
 
 // Inverse implements rules.Executor.

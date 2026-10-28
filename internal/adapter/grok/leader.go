@@ -51,6 +51,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -496,11 +497,25 @@ func (a *Adapter) sendViaLeader(ctx context.Context, c *leaderConn, e rosterEntr
 
 	started := make(chan error, 1)
 	tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), a.opts.TurnTimeout)
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		tcancel()
+		c.close()
+		return errors.New("grok: lasso is shutting down")
+	}
+	a.conns[c] = true
+	a.mu.Unlock()
 	a.turns.Add(1)
 	go func() {
 		defer a.turns.Done()
 		defer tcancel()
 		defer a.dropLeaderPrompts(c)
+		defer func() {
+			a.mu.Lock()
+			delete(a.conns, c)
+			a.mu.Unlock()
+		}()
 		defer c.close()
 		select {
 		case m, ok := <-resp:
@@ -508,7 +523,12 @@ func (a *Adapter) sendViaLeader(ctx context.Context, c *leaderConn, e rosterEntr
 			case !ok:
 				err := c.lostErr()
 				started <- fmt.Errorf("grok: %w", err)
-				a.leaderNote(sid, "lasso lost contact with grok's leader before your message's turn finished ("+err.Error()+"); it may or may not have run.")
+				a.mu.Lock()
+				closing := a.closed
+				a.mu.Unlock()
+				if !closing {
+					a.leaderNote(sid, "lasso lost contact with grok's leader before your message's turn finished ("+err.Error()+"); it may or may not have run.")
+				}
 			case m.Error != nil:
 				started <- nil // grok took the message; the turn failed
 				a.leaderNote(sid, "grok couldn't run your message: "+m.Error.Error())
@@ -697,18 +717,59 @@ func (a *Adapter) dropLeaderPrompts(c *leaderConn) {
 
 // held is a message waiting for a session to close in a grok window that
 // isn't in leader mode. Resuming it headlessly while the window has it
-// open would fork the conversation, so lasso waits.
-type held struct {
-	text string
-	at   time.Time
-}
+// open would fork the conversation, so lasso waits. It is also kept in the
+// held store, when the daemon gave one, so a restart doesn't lose it.
+type held = adapter.HeldMessage
 
 // hold keeps text for session id until it can go out, and says so.
 func (a *Adapter) hold(id, text string) {
+	m := held{ID: adapter.NewHeldID(), Adapter: Kind, Session: id, Text: text, Created: a.opts.Now()}
 	a.mu.Lock()
-	a.held[id] = append(a.held[id], held{text: text, at: a.opts.Now()})
+	a.held[id] = append(a.held[id], m)
+	store := a.store
 	a.mu.Unlock()
-	a.leaderNote(id, "Your message is waiting until that session closes: it's open in a grok window that isn't in leader mode, and sending it now would fork the conversation. lasso sends it once the window is closed.")
+	note := "Your message is waiting until that session closes: it's open in a grok window that isn't in leader mode, and sending it now would fork the conversation. lasso sends it once the window is closed."
+	if store != nil {
+		if err := store.Hold(m); err != nil {
+			note += " lasso couldn't save it to disk (" + err.Error() + "), so it is lost if lasso restarts before then."
+		}
+	}
+	a.leaderNote(id, note)
+}
+
+// UseHeldStore implements adapter.Holder: from now on held messages are
+// kept in s, and the ones s already has (from before a restart) are held
+// again, to go out once their window closes.
+func (a *Adapter) UseHeldStore(s adapter.HeldStore) error {
+	ms, err := s.Held(Kind)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.store = s
+	if err != nil {
+		return fmt.Errorf("grok: reading held messages: %w", err)
+	}
+	for _, m := range ms {
+		if !slices.ContainsFunc(a.held[m.Session], func(h held) bool { return h.ID == m.ID }) {
+			a.held[m.Session] = append(a.held[m.Session], m)
+		}
+	}
+	return nil
+}
+
+// releaseHeld clears held messages from the store once they have gone out, or
+// failed to.
+func (a *Adapter) releaseHeld(msgs []held, sendErr error) {
+	a.mu.Lock()
+	s := a.store
+	a.mu.Unlock()
+	if s == nil {
+		return
+	}
+	for _, m := range msgs {
+		if err := s.Release(m, sendErr); err != nil {
+			a.leaderNote(m.Session, "lasso couldn't clear a held message from its records ("+err.Error()+"); it may be sent again after a restart.")
+		}
+	}
 }
 
 // flushHeld sends held messages whose session can now take them: through
@@ -732,6 +793,7 @@ func (a *Adapter) flushHeld(ctx context.Context) {
 			if err != nil {
 				a.leaderNote(id, "lasso couldn't send your held message through grok's leader: "+err.Error())
 			}
+			a.releaseHeld(msgs, err)
 			continue
 		}
 		if live[id] || a.isBusy(id) {
@@ -744,12 +806,15 @@ func (a *Adapter) flushHeld(ctx context.Context) {
 		if err != nil {
 			msgs := a.takeHeld(id)
 			a.leaderNote(id, fmt.Sprintf("lasso couldn't send %d held message(s): %v", len(msgs), err))
+			a.releaseHeld(msgs, err)
 			continue
 		}
 		msgs := a.takeHeld(id)
-		if err := a.start(ctx, s, joinHeld(msgs), nil, true); err != nil {
+		err = a.start(ctx, s, joinHeld(msgs), nil, true)
+		if err != nil {
 			a.leaderNote(id, "lasso couldn't send your held message: "+err.Error())
 		}
+		a.releaseHeld(msgs, err)
 	}
 }
 
@@ -766,11 +831,11 @@ func (a *Adapter) takeHeld(id string) []held {
 // first, so they go out as one turn rather than racing each other.
 func joinHeld(msgs []held) string {
 	if len(msgs) == 1 {
-		return msgs[0].text
+		return msgs[0].Text
 	}
 	parts := make([]string, len(msgs))
 	for i, m := range msgs {
-		parts[i] = m.text
+		parts[i] = m.Text
 	}
 	return strings.Join(parts, "\n\n")
 }

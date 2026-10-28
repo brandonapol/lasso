@@ -1,8 +1,10 @@
 // Package store is lasso's SQLite database (WAL mode).
 //
-// It holds only what can be lost: read cursors, answers to decisions and
-// caches. Rules and the audit log live in files (ADR 0001 §2), so deleting
-// the database is always safe.
+// It holds only what can be lost: read cursors, answers to decisions,
+// caches, and messages held for bot sessions that are still open. Rules
+// and the audit log live in files (ADR 0001 §2), so deleting the database
+// is always safe; it only drops those held messages unsent.
+
 package store
 
 import (
@@ -50,6 +52,16 @@ var migrations = []string{
 	// that repo only.
 	`ALTER TABLE answers ADD COLUMN repo TEXT NOT NULL DEFAULT '';
 	CREATE INDEX answers_answered_at ON answers (answered_at);`,
+	// Messages a bot adapter holds until their session closes, so a
+	// restart doesn't lose them. Each is deleted once it goes out.
+	`CREATE TABLE held (
+		id TEXT PRIMARY KEY,
+		adapter TEXT NOT NULL,
+		session TEXT NOT NULL,
+		text TEXT NOT NULL,
+		created INTEGER NOT NULL
+	);
+	CREATE INDEX held_adapter_created ON held (adapter, created);`,
 }
 
 // Open opens (creating if needed) the database at path and migrates it.
@@ -201,6 +213,54 @@ func (s *Store) Answers(since time.Time) ([]Answer, error) {
 		}
 		a.At = time.Unix(0, at)
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// Held is a message a bot adapter is holding until its session closes.
+type Held struct {
+	ID      string
+	Adapter string
+	Session string
+	Text    string
+	Created time.Time
+}
+
+// AddHeld keeps a held message. Adding the same id again replaces it.
+func (s *Store) AddHeld(h Held) error {
+	if h.ID == "" || h.Adapter == "" {
+		return errors.New("store: a held message needs an id and an adapter")
+	}
+	_, err := s.DB.Exec(`INSERT INTO held (id, adapter, session, text, created) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET adapter = excluded.adapter, session = excluded.session,
+			text = excluded.text, created = excluded.created`,
+		h.ID, h.Adapter, h.Session, h.Text, h.Created.UnixNano())
+	return err
+}
+
+// DeleteHeld forgets a held message; a missing one is no error.
+func (s *Store) DeleteHeld(id string) error {
+	_, err := s.DB.Exec(`DELETE FROM held WHERE id = ?`, id)
+	return err
+}
+
+// HeldFor returns adapter's held messages, oldest first.
+func (s *Store) HeldFor(adapter string) ([]Held, error) {
+	rows, err := s.DB.Query(`SELECT id, adapter, session, text, created FROM held
+		WHERE adapter = ? ORDER BY created, rowid`, adapter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Held
+	for rows.Next() {
+		var h Held
+		var at int64
+		if err := rows.Scan(&h.ID, &h.Adapter, &h.Session, &h.Text, &at); err != nil {
+			return nil, err
+		}
+		h.Created = time.Unix(0, at)
+		out = append(out, h)
 	}
 	return out, rows.Err()
 }

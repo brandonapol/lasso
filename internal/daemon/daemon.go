@@ -98,6 +98,16 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	for _, a := range adapters {
 		byKind[a.Kind()] = a
 	}
+	// Messages held for open sessions live in lasso.db; the adapters
+	// reload them now, before any polling, and send them once their
+	// sessions close.
+	auditLog := audit.Open(AuditFile(opts.StateDir))
+	useHeldStore(adapters, heldStore{st: st, log: auditLog, now: time.Now}, logf)
+	fail := func(err error) (*backend, error) {
+		closeAdapters(adapters, logf)
+		_ = st.Close()
+		return nil, err
+	}
 
 	// The models: Haiku for the digest and sorting, Sonnet for Summaries,
 	// Jev to cut first. Each is off without its key; keyNotice says so.
@@ -112,15 +122,13 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 			Key: key, Model: llm.Haiku, BaseURL: opts.AnthropicURL, DailyUSD: cfg.Models.HaikuDailyUSD,
 			Spend: llm.StoreSpend{S: st, Feature: featureDigest},
 		}); err != nil {
-			_ = st.Close()
-			return nil, err
+			return fail(err)
 		}
 		if sonnet, err = llm.New(llm.Options{
 			Key: key, Model: llm.Sonnet, BaseURL: opts.AnthropicURL, DailyUSD: cfg.Models.SonnetDailyUSD,
 			Spend: llm.StoreSpend{S: st, Feature: featureSummary},
 		}); err != nil {
-			_ = st.Close()
-			return nil, err
+			return fail(err)
 		}
 	}
 	jc := jev.New(cfg.Jev, env, jev.StoreSpend{S: st})
@@ -157,7 +165,7 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 		Sorter: dg, Digest: dg, Summaries: sums, SessionRepo: repos.find, PromptFacts: askFacts(byKind), Notices: notices,
 	})
 	acts := &actions{
-		eng:      rules.NewEngine(rulesPath, audit.Open(AuditFile(opts.StateDir)), executor{adapters: byKind}, time.Now),
+		eng:      rules.NewEngine(rulesPath, auditLog, executor{adapters: byKind}, time.Now),
 		adapters: byKind, answers: st, resolve: src.Resolve, wake: src.Wake, now: time.Now, logf: logf,
 		summaries: sums, repos: cfg.HotRepos,
 	}
@@ -180,8 +188,12 @@ func startBackend(ctx context.Context, opts Options) (*backend, error) {
 	return &backend{src: src, actions: acts, stop: func() {
 		cancel()
 		wg.Wait()
+		// Close the relay session and leader connections; held messages
+		// stay in the store for the next start.
+		closeAdapters(adapters, logf)
 		_ = st.Close()
 	}}, nil
+
 }
 
 // Options configures Run.

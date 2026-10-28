@@ -434,7 +434,7 @@ func TestSendResumes(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	_, cur, _ := f.a.Events(ctx, "")
-	if err := f.a.Send(ctx, sChatty, "Please also fix the lexer."); err != nil {
+	if _, err := f.a.Send(ctx, sChatty, "Please also fix the lexer."); err != nil {
 		t.Fatal(err)
 	}
 	if !f.a.wait(10 * time.Second) {
@@ -472,7 +472,7 @@ func TestSendResumes(t *testing.T) {
 
 func TestSendRetriesFresh(t *testing.T) {
 	f := newFixture(t)
-	if err := f.a.Send(context.Background(), sListed, "hello"); err != nil {
+	if _, err := f.a.Send(context.Background(), sListed, "hello"); err != nil {
 		t.Fatal(err)
 	}
 	f.a.wait(10 * time.Second)
@@ -501,12 +501,12 @@ func TestSendRetriesFresh(t *testing.T) {
 func TestSendReadOnly(t *testing.T) {
 	f := newFixture(t)
 	for _, id := range []string{sRunning} {
-		err := f.a.Send(context.Background(), id, "hi")
+		_, err := f.a.Send(context.Background(), id, "hi")
 		if !errors.Is(err, adapter.ErrReadOnly) {
 			t.Errorf("%s: err = %v, want read-only", id, err)
 		}
 	}
-	if err := f.a.Send(context.Background(), "nope", "hi"); err == nil || errors.Is(err, adapter.ErrReadOnly) {
+	if _, err := f.a.Send(context.Background(), "nope", "hi"); err == nil || errors.Is(err, adapter.ErrReadOnly) {
 		t.Errorf("unknown session: err = %v", err)
 	}
 	if calls := f.calls(t); slices.ContainsFunc(calls, func(c fakeCall) bool { return c.Args[0] != "sessions" }) {
@@ -517,7 +517,7 @@ func TestSendReadOnly(t *testing.T) {
 // A turn lasso runs that stops at a prompt comes back answerable.
 func TestSendThenPrompt(t *testing.T) {
 	f := newFixture(t)
-	if err := f.a.Send(context.Background(), sChatty, "PLEASE_PROMPT"); err != nil {
+	if _, err := f.a.Send(context.Background(), sChatty, "PLEASE_PROMPT"); err != nil {
 		t.Fatal(err)
 	}
 	f.a.wait(10 * time.Second)

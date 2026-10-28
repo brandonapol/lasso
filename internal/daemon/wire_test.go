@@ -54,11 +54,11 @@ func (f *fakeKind) Events(_ context.Context, since adapter.Cursor) ([]adapter.Ev
 	return f.events, "read", nil
 }
 
-func (f *fakeKind) Send(_ context.Context, session, text string) error {
+func (f *fakeKind) Send(_ context.Context, session, text string) (adapter.Delivery, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, session+": "+text)
-	return nil
+	return adapter.Sent, nil
 }
 
 func (f *fakeKind) Answer(context.Context, string, adapter.Choice) error { return nil }

@@ -119,3 +119,40 @@ As with Claude, an open-but-idle non-leader TUI can't be resumed safely. So the 
 1. **Claude Code:** build the relay and switch liveness to `~/.claude/sessions/*.json`. Follow-up ticket: #41.
 2. **grok:** when a leader owns the session, send (and later answer prompts) as an ACP client of the leader. Otherwise keep the session read-only and say so in the UI. Follow-up ticket: #42.
 3. **Both:** for sessions neither path reaches, "deliver on next idle" becomes "deliver when the session's process exits". The UI should say "queued until you close this session" rather than "can't send". This is part of each ticket.
+
+## What building it found (#41, #42, #51)
+
+Both paths are built: the Claude Code relay (#41, PR #49) and the grok leader client (#42, PR #48). Building them corrected or added to the spike in these ways.
+
+### grok's leader socket isn't plain ACP
+
+The spike assumed lasso could speak ACP on `~/.grok/leader.sock`. It can't, not directly.
+
+- Each message is a frame: a 4-byte big-endian length, then a JSON envelope.
+- The client registers first (`{"type":"register",…}`) and gets back `{"type":"registered","leader_protocol_version":1,…}`.
+- After that, every ACP message travels as `{"type":"acp","payload":"<the JSON-RPC message, as a string>"}`.
+
+lasso speaks this framing itself. It doesn't use `grok agent --leader stdio` as a bridge, because that command starts a new leader when none answers, and lasso must never start one. If the leader reports a protocol version other than 1, lasso says so once and carries on as if there were no leader.
+
+### Loading a shared grok session must send `yoloMode: false`
+
+If `session/load` leaves out `_meta.yoloMode`, the shared session switches to the loading client's default permission mode. For a user whose grok config says always-approve, loading a session from lasso would have turned an ask-mode session into an always-approve one. lasso always sends `"_meta": {"yoloMode": false}`. That was seen to keep an ask-mode session in ask mode, and to leave an always-approve session alone. A test pins it.
+
+### lasso's relay checks every call before it runs
+
+The spike planned to read the relay's `SendMessage` call out of its output stream and compare it with the user's text. By then the call has already run. Instead, when lasso starts its relay it registers a PreToolUse hook over Claude Code's SDK control protocol. The hook lives only in the relay's own process; nothing is installed into the user's Claude Code.
+
+lasso allows a call only if it is the one `SendMessage` it asked for, to that exact session name, with that exact text. Anything else, such as changed text, another target, a paraphrase or another tool, is denied before it runs, and the send fails with an error. After a send, lasso also checks the receiver's transcript for the matching peer entry.
+
+### Answering grok prompts through the leader is still unverified
+
+The grok account used for testing returns `402 Grok Build usage balance exhausted`, so no model turn ran to completion through the leader and no permission prompt was ever raised. lasso's code for answering a leader's `session/request_permission` (with the request's own allow-once or reject-once option, never "always") follows the ACP spec and is tested only against a fake leader. It is also still unknown whether the leader sends a shared session's permission requests to every attached client, or only to the client whose prompt is running.
+
+### Held messages (#51)
+
+When neither path reaches an open session, lasso holds the message until the session closes, as recommended above.
+
+- `Send` now says what happened to a message: sent, held, or held for approval (Claude Code holds a relayed message when the receiving session runs in a different permission mode). lasso says "sent" only for a delivered message. For a held one it says the message is waiting until that session closes.
+- Held messages are kept in `lasso.db` (table `held`) with the adapter, session, text and time. Each is deleted once it goes out. After a restart the adapters reload them, so a restart no longer loses them.
+- The audit log gets a `hold_message` line when a message is held and a `deliver_message` line when it goes out (or fails to), with actor `lasso`.
+- On shutdown the daemon closes the Claude Code relay session and any open grok leader connections.

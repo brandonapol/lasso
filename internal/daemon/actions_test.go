@@ -57,7 +57,9 @@ func (f *fakeBot) Events(_ context.Context, since adapter.Cursor) ([]adapter.Eve
 	return out, adapter.Cursor(strings.Join(f.prompts, ",")), nil
 }
 
-func (f *fakeBot) Send(context.Context, string, string) error { return nil }
+func (f *fakeBot) Send(context.Context, string, string) (adapter.Delivery, error) {
+	return adapter.Sent, nil
+}
 
 func (f *fakeBot) Answer(_ context.Context, promptID string, c adapter.Choice) error {
 	f.mu.Lock()

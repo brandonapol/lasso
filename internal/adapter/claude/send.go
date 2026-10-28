@@ -12,11 +12,10 @@ import (
 	"github.com/brandonapol/lasso/internal/attention"
 )
 
-// queued is a message waiting for its session's process to exit.
-type queued struct {
-	session, text string
-	at            time.Time
-}
+// queued is a message waiting for its session's process to exit. It is
+// also kept in the held store, when the daemon gave one, so a restart
+// doesn't lose it.
+type queued = adapter.HeldMessage
 
 // check is a relayed message lasso hasn't yet seen land in its session.
 type check struct {
@@ -33,47 +32,51 @@ type check struct {
 //     to that session, and that the session's transcript shows it arrived.
 //   - When the relay can't reach an open session, text waits until the
 //     session's process exits, and then goes out by resume. Send returns
-//     nil and says so in an event.
-func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
+//     adapter.Held and says so in an event.
+//
+// A message Claude Code holds for its user's approval is
+// adapter.HeldForApproval.
+func (a *Adapter) Send(ctx context.Context, sessionID, text string) (adapter.Delivery, error) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(text) == "" {
-		return errors.New("claude: send needs a session and some text")
+		return "", errors.New("claude: send needs a session and some text")
 	}
 	a.mu.Lock()
 	vs, err := a.views()
 	if err != nil {
 		a.mu.Unlock()
-		return fmt.Errorf("claude: %w", err)
+		return "", fmt.Errorf("claude: %w", err)
 	}
 	i := slices.IndexFunc(vs, func(v view) bool { return v.f.id == sessionID })
 	if i < 0 {
 		a.mu.Unlock()
-		return fmt.Errorf("claude: no session %q", sessionID)
+		return "", fmt.Errorf("claude: no session %q", sessionID)
 	}
 	v := vs[i]
 	if !v.writable {
 		a.mu.Unlock()
-		return fmt.Errorf("claude: %w: its directory %s is gone", adapter.ErrReadOnly, v.f.cwd)
+		return "", fmt.Errorf("claude: %w: its directory %s is gone", adapter.ErrReadOnly, v.f.cwd)
 	}
+	why := ""
 	switch {
 	case a.draining[sessionID] || a.hasQueued(sessionID):
-		a.enqueue(sessionID, text, "earlier messages to it are still waiting, and yours goes after them")
-		a.mu.Unlock()
-		return nil
+		why = "earlier messages to it are still waiting, and yours goes after them"
 	case a.busy[sessionID]:
-		a.enqueue(sessionID, text, "lasso is still sending it your last message")
-		a.mu.Unlock()
-		return nil
+		why = "lasso is still sending it your last message"
 	case !v.live:
 		a.mu.Unlock()
-		return a.resume(ctx, sessionID, text)
+		if err := a.resume(ctx, sessionID, text); err != nil {
+			return "", err
+		}
+		return adapter.Sent, nil
 	case v.ses == nil || v.ses.Socket == "" || v.ses.Name == "":
-		a.enqueue(sessionID, text, "this Claude Code doesn't let other sessions message it")
-		a.mu.Unlock()
-		return nil
+		why = "this Claude Code doesn't let other sessions message it"
 	case !v.unique:
-		a.enqueue(sessionID, text, fmt.Sprintf("another open session has the same name (%s), so lasso can't address it alone", v.ses.Name))
+		why = fmt.Sprintf("another open session has the same name (%s), so lasso can't address it alone", v.ses.Name)
+	}
+	if why != "" {
+		a.enqueue(sessionID, text, why)
 		a.mu.Unlock()
-		return nil
+		return adapter.Held, nil
 	}
 	name := v.ses.Name
 	a.mu.Unlock()
@@ -85,13 +88,13 @@ func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
 		a.mu.Lock()
 		a.enqueue(sessionID, text, "lasso's relay couldn't reach it ("+clip(err.Error(), clipDetail)+")")
 		a.mu.Unlock()
-		return nil
+		return adapter.Held, nil
 	case errors.Is(err, errRelayChanged):
-		return fmt.Errorf("claude: %w", err)
+		return "", fmt.Errorf("claude: %w", err)
 	case errors.Is(err, errRefused):
-		return fmt.Errorf("claude: session %s refused your message: %s", name, clip(res.notice, clipDetail))
+		return "", fmt.Errorf("claude: session %s refused your message: %s", name, clip(res.notice, clipDetail))
 	case err != nil:
-		return fmt.Errorf("claude: sending to %s through lasso's relay: %w", name, err)
+		return "", fmt.Errorf("claude: sending to %s through lasso's relay: %w", name, err)
 	}
 
 	a.mu.Lock()
@@ -99,10 +102,10 @@ func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
 	a.lastSent = sessionID
 	if res.outcome == relayHeld {
 		a.note(sessionID, "lasso passed your message on, and Claude Code is holding it until you approve it in that session: it runs in a different permission mode from lasso's relay.")
-		return nil
+		return adapter.HeldForApproval, nil
 	}
 	if res.msgID == "" {
-		return nil // nothing to check it by
+		return adapter.Sent, nil // nothing to check it by
 	}
 	// Watch the session's transcript for it to land, briefly here, then
 	// on later reads (a busy session takes it in at its next step).
@@ -112,10 +115,13 @@ func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
 		landed, err := a.landed(sessionID, res.msgID, body)
 		if landed || err != nil {
 			a.checks = slices.DeleteFunc(a.checks, func(c check) bool { return c.msgID == res.msgID })
-			return err
+			if err != nil {
+				return "", err
+			}
+			return adapter.Sent, nil
 		}
 		if !time.Now().Before(end) || ctx.Err() != nil {
-			return nil // queued in the session; verify keeps watching
+			return adapter.Sent, nil // queued in the session; verify keeps watching
 		}
 		a.mu.Unlock()
 		select {
@@ -201,14 +207,56 @@ func (a *Adapter) resume(ctx context.Context, sessionID, text string) error {
 }
 
 func (a *Adapter) hasQueued(session string) bool {
-	return slices.ContainsFunc(a.queued, func(q queued) bool { return q.session == session })
+	return slices.ContainsFunc(a.queued, func(q queued) bool { return q.Session == session })
 }
 
-// enqueue holds text until its session's process exits, and says so.
-// Caller holds a.mu.
+// enqueue holds text until its session's process exits, keeps it in the
+// held store, and says so. Caller holds a.mu.
 func (a *Adapter) enqueue(session, text, why string) {
-	a.queued = append(a.queued, queued{session: session, text: text, at: a.opts.Now()})
-	a.note(session, "Your message is waiting until that session closes: "+why+". lasso will send it as soon as the session's process exits. It won't resume the session while a terminal still has it open, because that would fork the conversation.")
+	q := queued{ID: adapter.NewHeldID(), Adapter: Kind, Session: session, Text: text, Created: a.opts.Now()}
+	a.queued = append(a.queued, q)
+	msg := "Your message is waiting until that session closes: " + why + ". lasso will send it as soon as the session's process exits. It won't resume the session while a terminal still has it open, because that would fork the conversation."
+	if a.held != nil {
+		if err := a.held.Hold(q); err != nil {
+			msg += " lasso couldn't save it to disk (" + clip(err.Error(), clipDetail) + "), so it is lost if lasso restarts before then."
+		}
+	}
+	a.note(session, msg)
+}
+
+// UseHeldStore implements adapter.Holder: from now on held messages are
+// kept in s, and the ones s already has (from before a restart) are held
+// again, to go out once their session closes.
+func (a *Adapter) UseHeldStore(s adapter.HeldStore) error {
+	ms, err := s.Held(Kind)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.held = s
+	if err != nil {
+		return fmt.Errorf("claude: reading held messages: %w", err)
+	}
+	for _, m := range ms {
+		if !slices.ContainsFunc(a.queued, func(q queued) bool { return q.ID == m.ID }) {
+			a.queued = append(a.queued, m)
+		}
+	}
+	return nil
+}
+
+// release clears a held message from the store once it has gone out, or
+// failed to. Caller doesn't hold a.mu.
+func (a *Adapter) release(q queued, sendErr error) {
+	a.mu.Lock()
+	s := a.held
+	a.mu.Unlock()
+	if s == nil {
+		return
+	}
+	if err := s.Release(q, sendErr); err != nil {
+		a.mu.Lock()
+		a.note(q.Session, "lasso couldn't clear a held message from its records ("+clip(err.Error(), clipDetail)+"); it may be sent again after a restart.")
+		a.mu.Unlock()
+	}
 }
 
 // flush sends what was queued for sessions that have closed, in order,
@@ -237,7 +285,7 @@ func (a *Adapter) flush(vs []view) {
 func (a *Adapter) drain(id string) {
 	for {
 		a.mu.Lock()
-		i := slices.IndexFunc(a.queued, func(q queued) bool { return q.session == id })
+		i := slices.IndexFunc(a.queued, func(q queued) bool { return q.Session == id })
 		if i < 0 {
 			delete(a.draining, id)
 			a.mu.Unlock()
@@ -246,11 +294,13 @@ func (a *Adapter) drain(id string) {
 		q := a.queued[i]
 		a.queued = slices.Delete(a.queued, i, i+1)
 		a.mu.Unlock()
-		if err := a.resume(context.Background(), id, q.text); err != nil {
+		err := a.resume(context.Background(), id, q.Text)
+		if err != nil {
 			a.mu.Lock()
 			a.note(id, "lasso couldn't send the message it was holding for this session: "+err.Error())
 			a.mu.Unlock()
 		}
+		a.release(q, err)
 	}
 }
 

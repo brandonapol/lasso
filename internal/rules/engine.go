@@ -36,6 +36,9 @@ type Done struct {
 	Detail string
 	// Args are facts about the result the inverse may need.
 	Args map[string]string
+	// Delivery is, for a message to a bot, what became of it: "sent",
+	// "held" (waiting until the session closes) or "held_for_approval".
+	Delivery string
 }
 
 // Executor sends actions: one adapter call each (ADR 0001 §2).
@@ -56,6 +59,11 @@ type Outcome struct {
 	Detail string `json:"detail,omitempty"`
 	// Undoable is true when the action has a recorded inverse.
 	Undoable bool `json:"undoable,omitempty"`
+	// Delivery is, for a message to a bot, what became of it: "sent",
+	// "held" (lasso keeps it until the session closes, then sends it) or
+	// "held_for_approval" (the session has it, and waits for its user to
+	// approve it there). Empty for other actions.
+	Delivery string `json:"delivery,omitempty"`
 }
 
 // Engine runs every outward action through rules check, then audit write,
@@ -175,7 +183,8 @@ func (e *Engine) run(ctx context.Context, id, actor, bot, undoOf string, step au
 	if inv, ok := e.Exec.Inverse(step, done); ok && undoOf == "" {
 		res.Undo = &inv
 	}
-	out := Outcome{ID: id, Decision: dec, Detail: done.Detail, Undoable: res.Undo != nil}
+	out := Outcome{ID: id, Decision: dec, Detail: done.Detail, Undoable: res.Undo != nil, Delivery: done.Delivery}
+
 	if aerr := e.Log.Append(res); aerr != nil {
 		// It already happened; say so rather than pretend it didn't.
 		out.Detail += " (done, but the result couldn't be recorded: " + aerr.Error() + ")"

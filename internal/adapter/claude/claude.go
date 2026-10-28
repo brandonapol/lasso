@@ -137,14 +137,15 @@ type Adapter struct {
 	relay *relay
 
 	mu       sync.Mutex
-	files    map[string]*file // by session id
-	skipped  map[string]int   // unusable lines, by type
-	busy     map[string]bool  // sessions lasso is resuming right now
-	draining map[string]bool  // sessions whose queued messages are going out
-	queued   []queued         // messages waiting for their session to close
-	checks   []check          // relayed messages not yet seen landing
-	lastSent string           // the session the relay last sent to
-	replies  []adapter.Event  // lasso's own notes and replies, for the next Events call
+	files    map[string]*file  // by session id
+	skipped  map[string]int    // unusable lines, by type
+	busy     map[string]bool   // sessions lasso is resuming right now
+	draining map[string]bool   // sessions whose queued messages are going out
+	queued   []queued          // messages waiting for their session to close
+	held     adapter.HeldStore // keeps queued across restarts; nil: memory only
+	checks   []check           // relayed messages not yet seen landing
+	lastSent string            // the session the relay last sent to
+	replies  []adapter.Event   // lasso's own notes and replies, for the next Events call
 }
 
 var _ adapter.Adapter = (*Adapter)(nil)
@@ -226,7 +227,7 @@ func New(opts Options) *Adapter {
 }
 
 // Close stops the relay, if it is running. Messages still queued for open
-// sessions are dropped with it.
+// sessions stay in the held store and go out after lasso starts again.
 func (a *Adapter) Close() error {
 	a.relay.shutdown()
 	return nil

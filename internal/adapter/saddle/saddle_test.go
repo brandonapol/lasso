@@ -276,7 +276,7 @@ func TestWriteWithReadTokenNeedsAdmin(t *testing.T) {
 	a := newAdapter(t, srv, readToken, nil)
 	ctx := context.Background()
 	for name, err := range map[string]error{
-		"send":   a.Send(ctx, "t1", "please rebase"),
+		"send":   second(a.Send(ctx, "t1", "please rebase")),
 		"answer": a.Answer(ctx, "p-abc", adapter.Choice{Option: 1}),
 	} {
 		if !errors.Is(err, adapter.ErrReadOnly) || !strings.Contains(err.Error(), "needs an admin token") {
@@ -292,7 +292,7 @@ func TestWritesGoThroughConfirm(t *testing.T) {
 	f, srv := newFake(t)
 	a := newAdapter(t, srv, adminToken, nil)
 	ctx := context.Background()
-	if err := a.Send(ctx, "t1", "please add a test"); err != nil {
+	if _, err := a.Send(ctx, "t1", "please add a test"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Answer(ctx, "p-abc", adapter.Choice{Option: 2}); err != nil {
@@ -325,7 +325,7 @@ func TestNotRunningIsReportedOnce(t *testing.T) {
 	if len(reports) != 1 || !strings.Contains(reports[0], "saddle isn't running") {
 		t.Fatalf("reports = %q", reports)
 	}
-	if err := a.Send(ctx, "t1", "hi"); err == nil || !strings.Contains(err.Error(), "isn't running") {
+	if _, err := a.Send(ctx, "t1", "hi"); err == nil || !strings.Contains(err.Error(), "isn't running") {
 		t.Fatalf("send while down: %v", err)
 	}
 }
@@ -351,3 +351,6 @@ func TestBadTokenIsReportedOnceThenRecovery(t *testing.T) {
 		t.Fatalf("reports = %q", reports)
 	}
 }
+
+// second is the error of a two-value call.
+func second[T any](_ T, err error) error { return err }

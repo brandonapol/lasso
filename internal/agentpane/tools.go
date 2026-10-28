@@ -313,6 +313,12 @@ func field(f api.Focus, name string) string {
 
 func done(out rules.Outcome) string {
 	s := "Done"
+	switch out.Delivery {
+	case "held":
+		s = "Accepted but NOT delivered yet: lasso is holding the message until that session closes. Tell the user it is waiting, not sent"
+	case "held_for_approval":
+		s = "Passed on, but NOT taken in yet: the session is holding the message until the user approves it there. Tell the user it is waiting, not sent"
+	}
 	if out.Decision.Rule != "" {
 		s += ", allowed by the rule " + out.Decision.Rule
 	}
