@@ -72,7 +72,7 @@ func activity() Activity {
 }
 
 type modelReq struct {
-	Model    string `json:"model"`
+	Model    string                  `json:"model"`
 	System   []struct{ Text string } `json:"system"`
 	Messages []struct {
 		Role    string `json:"role"`
