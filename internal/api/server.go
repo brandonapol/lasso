@@ -37,6 +37,12 @@ type Options struct {
 	Actions Actions
 	// Chat is the agent pane behind GET/POST /chat. Nil answers 501.
 	Chat Chat
+	// HotRepos are the configured hot repos, for the web view's header
+	// (the TUI reads them from the config file itself).
+	HotRepos []string
+	// Now is the clock web sessions and one-time codes expire by
+	// (default time.Now).
+	Now func() time.Time
 	// Hub carries the API's own events (focus requests, chat updates) to
 	// GET /events. Nil makes a private one.
 	Hub *Hub
@@ -124,6 +130,9 @@ func Handler(src Source, opts Options) http.Handler {
 		if st.Bots == nil {
 			st.Bots = []BotStatus{}
 		}
+		if len(st.HotRepos) == 0 {
+			st.HotRepos = opts.HotRepos
+		}
 		writeJSON(w, st)
 	})
 	if opts.Actions == nil {
@@ -165,8 +174,10 @@ func Handler(src Source, opts Options) http.Handler {
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
 		serveEvents(w, r, src, opts.Hub, opts.KeepAlive)
 	})
+	web := newWebAuth(opts.Port, opts.Now)
+	webRoutes(mux, web)
 	tokens := map[Caller]string{CallerUser: opts.Token, CallerAgent: opts.AgentToken}
-	return guard(mux, tokens, opts.Port, map[string]bool{"/healthz": true})
+	return guard(mux, tokens, opts.Port, openPath, web)
 }
 
 // serveEvents streams src's and hub's events as Server-Sent Events until

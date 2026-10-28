@@ -69,18 +69,7 @@ func root() *cobra.Command {
 				return serve(cmd.Context())
 			},
 		},
-		&cobra.Command{
-			Use:   "open",
-			Short: "Open the web view in your browser",
-			RunE: func(cmd *cobra.Command, _ []string) error {
-				cfg, err := config.Load()
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "http://127.0.0.1:%d/\n", cfg.API.Port)
-				return nil
-			},
-		},
+		openCmd(),
 		&cobra.Command{
 			Use:   "version",
 			Short: "Print the version",

@@ -90,7 +90,7 @@ func TestActions(t *testing.T) {
 func TestSharedTokenIsNeverAgent(t *testing.T) {
 	var got Caller
 	inner := guard(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = CallerFrom(r.Context()) }),
-		map[Caller]string{CallerUser: testToken, CallerAgent: testToken}, 7337, nil)
+		map[Caller]string{CallerUser: testToken, CallerAgent: testToken}, 7337, openPath, nil)
 	req := httptest.NewRequest("GET", "http://127.0.0.1:7337/items", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	inner.ServeHTTP(httptest.NewRecorder(), req)

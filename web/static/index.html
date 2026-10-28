@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>lasso</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/web/app.css">
+<script src="/web/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#list">Skip to the list</a>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">◆</span> <strong>lasso</strong></div>
+  <div class="repos" id="repos" aria-label="Hot repos"></div>
+  <div class="state" id="state" aria-label="Bots and sync"></div>
+</header>
+
+<div id="signin" class="signin" hidden>
+  <p><strong>This browser isn't signed in.</strong></p>
+  <p>Run <code>lasso open</code> in a terminal; it opens a fresh sign-in link here.</p>
+</div>
+
+<main class="panes" id="panes">
+  <section class="pane chat" aria-labelledby="chat-title">
+    <h2 class="pane-title" id="chat-title">assistant</h2>
+    <ol class="messages" id="messages" aria-live="polite"></ol>
+    <form class="ask" id="ask">
+      <label for="ask-input" class="visually-hidden">Message lasso</label>
+      <span class="prompt" aria-hidden="true">›</span>
+      <input id="ask-input" name="text" autocomplete="off" placeholder="ask lasso" maxlength="8192">
+      <button type="submit">Send</button>
+    </form>
+  </section>
+
+  <section class="pane list" id="list" aria-labelledby="list-title">
+    <h2 class="visually-hidden" id="list-title">Lists</h2>
+    <nav class="tabs" role="tablist" aria-label="Lists" id="tabs">
+      <button role="tab" id="tab-issues" data-tab="issues" aria-controls="rows">Issues</button>
+      <button role="tab" id="tab-actions" data-tab="actions" aria-controls="rows">Actions</button>
+      <button role="tab" id="tab-doing" data-tab="doing" aria-controls="rows">In progress</button>
+      <button role="tab" id="tab-summaries" data-tab="summaries" aria-controls="rows">Summaries</button>
+    </nav>
+    <p class="hint" id="hint"></p>
+    <div id="rows" role="tabpanel"></div>
+  </section>
+
+  <section class="pane focus" id="focus" aria-labelledby="focus-title" tabindex="-1">
+    <h2 class="pane-title" id="focus-title">focus</h2>
+    <div id="focus-body"><p class="dim">nothing selected</p></div>
+    <p class="outcome" id="outcome" role="status" aria-live="polite"></p>
+  </section>
+</main>
+</body>
+</html>
