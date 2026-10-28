@@ -193,11 +193,50 @@ func paneTitle(name string, active bool) string {
 }
 
 func (m *Model) viewChat(w, h int) string {
-	lines := []string{paneTitle("assistant", m.pane == paneChat), ""}
-	msg := dim.Width(w - 2).Render("The assistant isn't here yet (#12). When it is, your bots' news and your replies to them show here.")
-	for _, ln := range strings.Split(msg, "\n") {
-		lines = append(lines, " "+ln)
+	head := []string{paneTitle("assistant", m.pane == paneChat), ""}
+	cw := max(w-2, 1)
+	var body []string
+	add := func(s string) {
+		for _, ln := range strings.Split(s, "\n") {
+			body = append(body, " "+ln)
+		}
 	}
+	for i, msg := range m.chat {
+		if i > 0 {
+			body = append(body, "")
+		}
+		switch {
+		case msg.Role == api.RoleUser:
+			add(dim.Width(cw).Render("› " + msg.Text))
+		case msg.Kind == "line_jumper":
+			add(accent.Width(cw).Render("! " + msg.Text))
+		default:
+			add(lipgloss.NewStyle().Width(cw).Render(msg.Text))
+		}
+	}
+	if m.pending != "" {
+		if len(body) > 0 {
+			body = append(body, "")
+		}
+		add(dim.Width(cw).Render("› " + m.pending))
+		body = append(body, "")
+		add(dim.Render("thinking…"))
+	}
+	if m.chatErr != "" {
+		if len(body) > 0 {
+			body = append(body, "")
+		}
+		add(dim.Width(cw).Render("couldn't reach the assistant: " + m.chatErr))
+	}
+	if len(body) == 0 {
+		add(dim.Width(cw).Render("Ask about anything on the tabs. I only speak up on my own when something can't wait."))
+	}
+	// Newest at the bottom, just above the input.
+	room := max(h-2-len(head), 0)
+	if len(body) > room {
+		body = body[len(body)-room:]
+	}
+	lines := append(head, body...)
 	for len(lines) < h-2 {
 		lines = append(lines, "")
 	}

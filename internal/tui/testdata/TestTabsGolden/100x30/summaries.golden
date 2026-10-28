@@ -1,9 +1,9 @@
  ◆ lasso   brandonapol/lasso  brandonapol/saddle                                             ● live 
  assistant                            │ 1 Issues   2 Actions   3 In progress   4 Summaries          
                                       │────────────────────────────────────────━━━━━━━━━━━──────────
- The assistant isn't here yet (#12).  │ the last 24 hours in each hot repo · g regenerate           
- When it is, your bots' news and your │                                                             
- replies to them show here.           │ ╭─────────────────────────────────────────────────────────╮ 
+ Since you left, CI on main failed.   │ the last 24 hours in each hot repo · g regenerate           
+                                      │                                                             
+                                      │ ╭─────────────────────────────────────────────────────────╮ 
                                       │ │ brandonapol/lasso                          g regenerate │ 
                                       │ │ Three pull requests merged: the API skeleton, the       │ 
                                       │ │ GitHub poller and the attention levels. The TUI is in   │ 
@@ -26,5 +26,5 @@
                                       │                                                             
                                       │                                                             
 ──────────────────────────────────────│                                                             
- › talk to your bots                  │                                                             
+ › ask lasso                          │                                                             
  tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                  

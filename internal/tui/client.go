@@ -69,6 +69,52 @@ func (c *Client) Action(ctx context.Context, kind, id string) error {
 	return statusErr(resp)
 }
 
+// Chat returns the assistant's conversation.
+func (c *Client) Chat(ctx context.Context) ([]api.ChatMessage, error) {
+	var out struct {
+		Messages []api.ChatMessage `json:"messages"`
+	}
+	err := c.getJSON(ctx, "/chat", &out)
+	return out.Messages, err
+}
+
+// SendChat sends the user's message to the assistant and returns the
+// conversation with its reply.
+func (c *Client) SendChat(ctx context.Context, text string) ([]api.ChatMessage, error) {
+	return c.postChat(ctx, "/chat", map[string]string{"text": text})
+}
+
+// OpenChat tells the assistant the TUI opened, so it can write its one
+// "since you left" message, and returns the conversation.
+func (c *Client) OpenChat(ctx context.Context) ([]api.ChatMessage, error) {
+	return c.postChat(ctx, "/chat/open", struct{}{})
+}
+
+func (c *Client) postChat(ctx context.Context, path string, in any) ([]api.ChatMessage, error) {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	req, err := c.request(ctx, "POST", path, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := statusErr(resp); err != nil {
+		return nil, err
+	}
+	var out struct {
+		Messages []api.ChatMessage `json:"messages"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out.Messages, err
+}
+
 // Event is one change from GET /events, its data still JSON.
 type Event struct {
 	Kind string
