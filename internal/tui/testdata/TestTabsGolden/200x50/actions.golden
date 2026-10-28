@@ -1,0 +1,50 @@
+ ◆ lasso   brandonapol/lasso  brandonapol/saddle                                                                                                                                                 ● live 
+ assistant                            │ 1 Issues   2 Actions   3 In progress   4 Summaries                                                               │ focus                                        
+                                      │────────────━━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────│                                              
+ The assistant isn't here yet (#12).  │ workflow runs in your hot repos                                                                                  │ ci · main                                    
+ When it is, your bots' news and your │                                                                                                                  │ brandonapol/lasso · failed · updated 12m ago 
+ replies to them show here.           │▌ ci · main                                                                                                failed │                                              
+                                      │▌ brandonapol/lasso · updated 12m ago                                                                             │ WHAT FAILED                                  
+                                      │                                                                                                                  │ lint: gofmt needed in internal/tui (heron).  
+                                      │  release · v0.4.0                                                                                         passed │                                              
+                                      │  brandonapol/saddle · updated 1h ago                                                                             │ ╭──────────────────────────────────────────╮ 
+                                      │                                                                                                                  │ │ lasso · a one-line fix; rerun after.     │ 
+                                      │                                                                                                                  │ ╰──────────────────────────────────────────╯ 
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+                                      │                                                                                                                  │                                              
+──────────────────────────────────────│                                                                                                                  │                                              
+ › talk to your bots                  │                                                                                                                  │ o open on GitHub   ? explain                 
+ tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                                                                                                                      

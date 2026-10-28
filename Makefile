@@ -16,10 +16,10 @@ install: ## Install lasso into GOBIN
 	$(GO) install ./cmd/lasso
 
 fmt: ## Format the code
-	gofmt -w .
+	gofmt -w $$(git ls-files '*.go')
 
 check: ## gofmt, vet, lint and tests (the gate for every PR)
-	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+	@unformatted="$$(gofmt -l $$(git ls-files '*.go'))"; if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	$(GO) vet ./...
 	golangci-lint run ./...
 	$(GO) test ./...
