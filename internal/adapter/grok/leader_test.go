@@ -237,7 +237,7 @@ func eventsWith(t *testing.T, f *fixture, want string) []adapter.Event {
 func TestLeaderSend(t *testing.T) {
 	f, fl := leaderFixture(t)
 	fl.own(sLive, true)
-	if err := f.a.Send(context.Background(), sLive, "hello there"); err != nil {
+	if _, err := f.a.Send(context.Background(), sLive, "hello there"); err != nil {
 		t.Fatal(err)
 	}
 	if !f.a.wait(10 * time.Second) {
@@ -276,7 +276,7 @@ func TestLeaderSend(t *testing.T) {
 func TestLeaderOwnsUnlistedSession(t *testing.T) {
 	f, fl := leaderFixture(t)
 	fl.own(sChatty, true)
-	if err := f.a.Send(context.Background(), sChatty, "hi"); err != nil {
+	if _, err := f.a.Send(context.Background(), sChatty, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	f.a.wait(10 * time.Second)
@@ -293,7 +293,7 @@ func TestLeaderPromptFails(t *testing.T) {
 	f, fl := leaderFixture(t)
 	fl.own(sLive, true)
 	fl.promptErr = &rpcError{Code: -32603, Message: "Internal error", Data: json.RawMessage(`{"message":"API error (status 402 Payment Required): Grok Build usage balance exhausted","http_status":402}`)}
-	if err := f.a.Send(context.Background(), sLive, "hi"); err != nil {
+	if _, err := f.a.Send(context.Background(), sLive, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	f.a.wait(10 * time.Second)
@@ -308,7 +308,7 @@ func TestLeaderPromptFails(t *testing.T) {
 func TestLeaderNotOwnedHoldsUntilClosed(t *testing.T) {
 	f, fl := leaderFixture(t)
 	fl.own(sLive, false) // on the leader's roster, but not loaded there
-	if err := f.a.Send(context.Background(), sLive, "later please"); err != nil {
+	if _, err := f.a.Send(context.Background(), sLive, "later please"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := fl.request("session/load"); ok {
@@ -350,7 +350,7 @@ func TestLeaderNotOwnedHoldsUntilClosed(t *testing.T) {
 func TestHeldMessagesJoin(t *testing.T) {
 	f := newFixture(t) // no leader at all
 	for _, m := range []string{"one", "two"} {
-		if err := f.a.Send(context.Background(), sLive, m); err != nil {
+		if _, err := f.a.Send(context.Background(), sLive, m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -372,7 +372,7 @@ func TestLeaderPermission(t *testing.T) {
 	f, fl := leaderFixture(t)
 	fl.own(sLive, true)
 	fl.perm = true
-	if err := f.a.Send(context.Background(), sLive, "run the tests"); err != nil {
+	if _, err := f.a.Send(context.Background(), sLive, "run the tests"); err != nil {
 		t.Fatal(err)
 	}
 	var e *adapter.Event
@@ -429,7 +429,7 @@ func TestLeaderProtocolMismatch(t *testing.T) {
 	fl.own(sChatty, true)
 	var said []string
 	f.a.opts.Report = func(msg string) { said = append(said, msg) }
-	if err := f.a.Send(context.Background(), sChatty, "hi"); err != nil {
+	if _, err := f.a.Send(context.Background(), sChatty, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	f.a.wait(10 * time.Second)

@@ -95,7 +95,28 @@ type Adapter struct {
 	turns    sync.WaitGroup
 
 	held          map[string][]held        // session -> messages waiting for its window to close
+	store         adapter.HeldStore        // keeps held across restarts; nil: memory only
 	leaderPrompts map[string]*leaderPrompt // prompt id -> a permission request the leader holds open
+	conns         map[*leaderConn]bool     // leader connections open for a turn lasso sent
+	closed        bool                     // Close was called
+}
+
+// Close implements io.Closer: it hangs up every connection to grok's
+// leader. Turns already queued in the leader run on there; held messages
+// stay in the held store for the next start. Headless turns lasso started
+// are left to finish.
+func (a *Adapter) Close() error {
+	a.mu.Lock()
+	a.closed = true
+	conns := make([]*leaderConn, 0, len(a.conns))
+	for c := range a.conns {
+		conns = append(conns, c)
+	}
+	a.mu.Unlock()
+	for _, c := range conns {
+		c.close()
+	}
+	return nil
 }
 
 var _ adapter.Adapter = (*Adapter)(nil)
@@ -133,6 +154,7 @@ func New(opts Options) *Adapter {
 		seen:          map[string]time.Time{},
 		held:          map[string][]held{},
 		leaderPrompts: map[string]*leaderPrompt{},
+		conns:         map[*leaderConn]bool{},
 	}
 }
 

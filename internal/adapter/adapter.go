@@ -17,11 +17,66 @@ import (
 
 // Adapter is one kind of bot.
 type Adapter interface {
-	Kind() string                                                      // "saddle", "claude", "grok"
-	Sessions(ctx context.Context) ([]Session, error)                   // what's running, idle, waiting
-	Events(ctx context.Context, since Cursor) ([]Event, Cursor, error) // new messages / prompts / state changes
-	Send(ctx context.Context, sessionID, text string) error            // a message from the user (via the agent pane)
-	Answer(ctx context.Context, promptID string, choice Choice) error  // reply to a permission/decision prompt
+	Kind() string                                                       // "saddle", "claude", "grok"
+	Sessions(ctx context.Context) ([]Session, error)                    // what's running, idle, waiting
+	Events(ctx context.Context, since Cursor) ([]Event, Cursor, error)  // new messages / prompts / state changes
+	Send(ctx context.Context, sessionID, text string) (Delivery, error) // a message from the user (via the agent pane)
+	Answer(ctx context.Context, promptID string, choice Choice) error   // reply to a permission/decision prompt
+}
+
+// Delivery is what became of a message Send accepted. Callers say "sent"
+// only for Sent.
+type Delivery string
+
+// The deliveries.
+const (
+	// Sent: the session has the message (or a headless turn took it).
+	Sent Delivery = "sent"
+	// Held: lasso is keeping the message until the session closes, and
+	// sends it then. Nothing has reached the session yet.
+	Held Delivery = "held"
+	// HeldForApproval: the message reached the session, which is holding
+	// it until its user approves it there (Claude Code does this when the
+	// session runs in a different permission mode from lasso's relay).
+	HeldForApproval Delivery = "held_for_approval"
+)
+
+// Waiting reports whether the message hasn't been taken in yet.
+func (d Delivery) Waiting() bool { return d == Held || d == HeldForApproval }
+
+// HeldMessage is a message an adapter is holding until its session closes.
+type HeldMessage struct {
+	ID      string    `json:"id"`
+	Adapter string    `json:"adapter"` // the adapter's Kind
+	Session string    `json:"session"`
+	Text    string    `json:"text"`
+	Created time.Time `json:"created"`
+}
+
+// HeldStore keeps held messages across daemon restarts (lasso.db). The
+// daemon's store also audits each message as it is queued and as it goes
+// out.
+type HeldStore interface {
+	// Hold records a message that is now being held.
+	Hold(m HeldMessage) error
+	// Release forgets a held message once lasso has sent it; err is why
+	// the send failed, if it did.
+	Release(m HeldMessage, err error) error
+	// Held lists adapter kind's held messages, oldest first.
+	Held(kind string) ([]HeldMessage, error)
+}
+
+// Holder is an adapter that holds messages. The daemon gives it the store
+// at startup, and it reloads what it was holding before a restart.
+type Holder interface {
+	UseHeldStore(s HeldStore) error
+}
+
+// NewHeldID returns a random id for a held message.
+func NewHeldID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "held-" + hex.EncodeToString(b[:])
 }
 
 // ErrReadOnly is wrapped by Send and Answer when the adapter can't write to

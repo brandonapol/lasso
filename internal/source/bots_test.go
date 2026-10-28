@@ -59,7 +59,9 @@ func (f *fakeBot) Events(_ context.Context, since adapter.Cursor) ([]adapter.Eve
 	return out, adapter.Cursor(strings.Join(ids, ",")), nil
 }
 
-func (f *fakeBot) Send(context.Context, string, string) error { return nil }
+func (f *fakeBot) Send(context.Context, string, string) (adapter.Delivery, error) {
+	return adapter.Sent, nil
+}
 
 func (f *fakeBot) Answer(context.Context, string, adapter.Choice) error { return nil }
 

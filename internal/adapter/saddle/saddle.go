@@ -241,11 +241,14 @@ func (a *Adapter) event(it needsYouItem) adapter.Event {
 // Send implements adapter.Adapter with saddle's message tool: a signed
 // [saddle] message to the task, which wakes it if it is idle. Unlike
 // typing into the pane, it never lands on top of the owner's draft.
-func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
+func (a *Adapter) Send(ctx context.Context, sessionID, text string) (adapter.Delivery, error) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(text) == "" {
-		return errors.New("saddle: send needs a session and some text")
+		return "", errors.New("saddle: send needs a session and some text")
 	}
-	return a.act(ctx, toolMessage, map[string]any{"task": sessionID, "message": text})
+	if err := a.act(ctx, toolMessage, map[string]any{"task": sessionID, "message": text}); err != nil {
+		return "", err
+	}
+	return adapter.Sent, nil
 }
 
 // Answer implements adapter.Adapter with saddle's answer tool. saddle

@@ -49,7 +49,7 @@ func TestSendResumesIdleSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := a.Send(ctx, "idle", "ship it to staging"); err != nil {
+	if _, err := a.Send(ctx, "idle", "ship it to staging"); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(log)
@@ -80,7 +80,7 @@ func TestSendFailureIsReported(t *testing.T) {
 	e := setup(t)
 	fakeClaude(t, e.path("idle"), e.cwd)
 	t.Setenv("FAKE_FAIL", "1")
-	err := e.adapter(t, nil).Send(context.Background(), "idle", "hello")
+	_, err := e.adapter(t, nil).Send(context.Background(), "idle", "hello")
 	if err == nil || !strings.Contains(err.Error(), "No conversation found") {
 		t.Errorf("send = %v, want claude's own complaint", err)
 	}
@@ -128,11 +128,11 @@ func TestSendQueuesUntilTheSessionCloses(t *testing.T) {
 	a := e.adapter(t, rec.run)
 	ctx := context.Background()
 	for _, text := range []string{"first", "second"} {
-		if err := a.Send(ctx, "perm", text); err != nil {
+		if _, err := a.Send(ctx, "perm", text); err != nil {
 			t.Fatalf("send to open perm = %v, want it queued", err)
 		}
 	}
-	if err := a.Send(ctx, "asking", "hello"); err != nil {
+	if _, err := a.Send(ctx, "asking", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	evs, _, err := a.Events(ctx, "")
@@ -171,7 +171,7 @@ func TestSendQueuesUntilTheSessionCloses(t *testing.T) {
 		t.Errorf("resumed %d times; the still-open session was resumed", n)
 	}
 
-	if err := a.Send(ctx, "worker", "hello"); err == nil || errors.Is(err, adapter.ErrReadOnly) {
+	if _, err := a.Send(ctx, "worker", "hello"); err == nil || errors.Is(err, adapter.ErrReadOnly) {
 		t.Errorf("send to saddle's worker = %v, want no such session", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestSendFlagLikeText(t *testing.T) {
 	e := setup(t)
 	var args []string
 	a := e.adapter(t, func(_ context.Context, _ string, as ...string) ([]byte, error) { args = as; return []byte("ok"), nil })
-	if err := a.Send(context.Background(), "idle", "--dangerously-skip-permissions"); err != nil {
+	if _, err := a.Send(context.Background(), "idle", "--dangerously-skip-permissions"); err != nil {
 		t.Fatal(err)
 	}
 	if last := args[len(args)-1]; strings.HasPrefix(last, "-") {

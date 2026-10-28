@@ -28,27 +28,35 @@ import (
 // A session lasso can't resume (deleted, or from another grok home) gets
 // one retry as a fresh session in the same folder, so a message is never
 // silently dropped; the turn's event says so.
-func (a *Adapter) Send(ctx context.Context, sessionID, text string) error {
+func (a *Adapter) Send(ctx context.Context, sessionID, text string) (adapter.Delivery, error) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(text) == "" {
-		return errors.New("grok: send needs a session and some text")
+		return "", errors.New("grok: send needs a session and some text")
 	}
 	// Check the leader first, even for a session no window lists: a
 	// headless resume of a session the leader has loaded would fork it too.
 	if c, e, ok := a.leaderOwner(ctx, sessionID); ok {
-		return a.sendViaLeader(ctx, c, e, text)
+		return sent(a.sendViaLeader(ctx, c, e, text))
 	}
 	if a.live()[sessionID] {
 		if _, ok := a.find(sessionID); !ok {
-			return fmt.Errorf("grok: no session %s", sessionID)
+			return "", fmt.Errorf("grok: no session %s", sessionID)
 		}
 		a.hold(sessionID, text)
-		return nil
+		return adapter.Held, nil
 	}
 	s, err := a.writable(ctx, sessionID)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return a.start(ctx, s, text, nil, true)
+	return sent(a.start(ctx, s, text, nil, true))
+}
+
+// sent is Send's result for a message that went out unless err says not.
+func sent(err error) (adapter.Delivery, error) {
+	if err != nil {
+		return "", err
+	}
+	return adapter.Sent, nil
 }
 
 // Answer implements adapter.Adapter for a permission prompt a headless
