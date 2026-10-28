@@ -71,6 +71,20 @@ func TestInvalidValues(t *testing.T) {
 	}
 }
 
+func TestSaddleAdapter(t *testing.T) {
+	cfg, err := LoadFile(write(t, "[adapters.saddle]\ntoken_file = \"/x/saddle.token\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := cfg.Adapters.Saddle; s.URL != "http://127.0.0.1:7431" || s.TokenFile != "/x/saddle.token" {
+		t.Fatalf("saddle = %+v", s)
+	}
+	_, err = LoadFile(write(t, "[adapters.saddle]\nurl = \"127.0.0.1:7431\"\n"))
+	if err == nil || !strings.Contains(err.Error(), "adapters.saddle.url") {
+		t.Fatalf("bad url err = %v", err)
+	}
+}
+
 func TestXDGDirs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/x/cfg")
 	t.Setenv("XDG_STATE_HOME", "/x/state")

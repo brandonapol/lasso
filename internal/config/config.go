@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,22 @@ type Config struct {
 	Models    Models    `toml:"models"`
 	API       API       `toml:"api"`
 	Jev       Jev       `toml:"jev"`
+	Adapters  Adapters  `toml:"adapters"`
+}
+
+// Adapters configures the bot adapters (ADR 0001 §4).
+type Adapters struct {
+	Saddle Saddle `toml:"saddle"`
+}
+
+// Saddle is how lasso reaches `saddle remote`.
+type Saddle struct {
+	// URL is the remote listener. A bare address means its /mcp route
+	// (the first repo it serves); give /mcp/<repo> for another.
+	URL string `toml:"url"`
+	// TokenFile holds a `saddle remote token create` secret. A read token
+	// lets lasso look; an admin token also lets it send and answer.
+	TokenFile string `toml:"token_file"`
 }
 
 // Jev configures TypeSafe's Jev, the cheap decision model lasso uses to cut
@@ -62,6 +79,7 @@ func Default() Config {
 		Models:    Models{HaikuDailyUSD: 1, SonnetDailyUSD: 5},
 		API:       API{Port: 7337},
 		Jev:       Jev{DailyUSD: 0.5},
+		Adapters:  Adapters{Saddle: Saddle{URL: "http://127.0.0.1:7431"}},
 	}
 }
 
@@ -139,6 +157,9 @@ func (c Config) Validate() error {
 	}
 	if c.Models.HaikuDailyUSD < 0 || c.Models.SonnetDailyUSD < 0 || c.Jev.DailyUSD < 0 {
 		return fmt.Errorf("models: daily caps must be 0 or more")
+	}
+	if u, err := url.Parse(c.Adapters.Saddle.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("adapters.saddle.url: %q is not an http(s) URL", c.Adapters.Saddle.URL)
 	}
 	return nil
 }
