@@ -1,9 +1,9 @@
  ◆ lasso   brandonapol/lasso  brandonapol/saddle                                             ● live 
  assistant                            │ focus                                                       
                                       │                                                             
- The assistant isn't here yet (#12).  │ Due dates from Projects v2 fields                           
- When it is, your bots' news and your │ brandonapol/lasso · due Fri · updated 2h ago                
- replies to them show here.           │                                                             
+ Since you left, CI on main failed.   │ Due dates from Projects v2 fields                           
+                                      │ brandonapol/lasso · due Fri · updated 2h ago                
+                                      │                                                             
                                       │ WHY IT MATTERS                                              
                                       │ The focus pane should say where a due date came from        
                                       │ (zebra).                                                    
@@ -26,5 +26,5 @@
                                       │                                                             
                                       │                                                             
 ──────────────────────────────────────│                                                             
- › talk to your bots                  │ o open on GitHub   ? explain                                
+ › ask lasso                          │ o open on GitHub   ? explain                                
  tab next pane · 1–4 tabs · ↑↓ enter focus · o open on GitHub · / search · r rules                  

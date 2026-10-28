@@ -1,8 +1,8 @@
 // Package llm is lasso's minimal client for Anthropic's Messages API
-// (POST /v1/messages), over plain net/http. It does one thing: send a cached
-// system prompt plus one user message and return the reply's text, after
-// checking a per-feature daily spending cap kept in lasso's database
-// (ADR 0001 §7).
+// (POST /v1/messages), over plain net/http. Complete sends a cached system
+// prompt plus one user message and returns the reply's text; Converse sends
+// a conversation with tools (for the agent pane). Both check a per-feature
+// daily spending cap kept in lasso's database first (ADR 0001 §7).
 //
 // The API key comes from ANTHROPIC_API_KEY, else ~/.config/lasso/anthropic_key
 // (which must be mode 0600). It is never logged or printed.
@@ -325,18 +325,32 @@ func (c *Client) Complete(ctx context.Context, r Request) (Response, error) {
 }
 
 func (c *Client) post(ctx context.Context, body []byte) (apiResponse, error) {
+	b, err := c.postRaw(ctx, body)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	var out apiResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		return apiResponse{}, fmt.Errorf("llm: decode: %w", err)
+	}
+	return out, nil
+}
+
+// postRaw sends body to /v1/messages, retrying rate limits and server
+// errors, and returns the successful response's body.
+func (c *Client) postRaw(ctx context.Context, body []byte) ([]byte, error) {
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return apiResponse{}, ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(c.backoff << attempt):
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(body))
 		if err != nil {
-			return apiResponse{}, err
+			return nil, err
 		}
 		req.Header.Set("x-api-key", c.key)
 		req.Header.Set("anthropic-version", apiVersion)
@@ -353,13 +367,9 @@ func (c *Client) post(ctx context.Context, body []byte) (apiResponse, error) {
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			return apiResponse{}, fmt.Errorf("llm: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return nil, fmt.Errorf("llm: %s: %s", resp.Status, strings.TrimSpace(string(b)))
 		}
-		var out apiResponse
-		if err := json.Unmarshal(b, &out); err != nil {
-			return apiResponse{}, fmt.Errorf("llm: decode: %w", err)
-		}
-		return out, nil
+		return b, nil
 	}
-	return apiResponse{}, last
+	return nil, last
 }
