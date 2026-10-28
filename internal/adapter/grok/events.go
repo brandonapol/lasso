@@ -78,6 +78,7 @@ type partialTurn struct {
 // The zero cursor means "what grok still has waiting": the permission
 // prompts sessions are stopped at. Older chatter isn't replayed.
 func (a *Adapter) Events(ctx context.Context, since adapter.Cursor) ([]adapter.Event, adapter.Cursor, error) {
+	a.flushHeld(ctx)
 	now := a.opts.Now()
 	prev, resumed := parseCursor(since)
 	all, err := a.scan(a.opts.Recent)

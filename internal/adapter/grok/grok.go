@@ -12,9 +12,13 @@
 // cancels the turn. Answer resumes the session with an --allow or --deny
 // rule built from the refused call's own arguments, for that turn only.
 //
-// Sessions open in a grok TUI are read-only until the live-session spike
-// (#9) lands. lasso never reads ~/.grok/auth.json or anything beside the
-// session tree and the list of open sessions.
+// A session open in a grok window is reached through grok's shared leader
+// when the user has leader mode on and the leader owns it (leader.go).
+// Otherwise a message for it waits until the window closes, then goes out
+// by headless resume: resuming while a window has it open would fork the
+// conversation. lasso never starts a leader, never turns leader mode on,
+// and never reads ~/.grok/auth.json or anything beside the session tree,
+// the list of open sessions and the leader socket.
 //
 // Everything grok writes is untrusted: text is rewritten through the
 // attention glossary for display but stays typed adapter.Untrusted.
@@ -27,6 +31,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -67,6 +72,11 @@ type Options struct {
 	Report func(msg string)
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
+	// LeaderSocket is where grok's shared leader listens. Empty means
+	// $GROK_LEADER_SOCKET, else <Home>/leader.sock.
+	LeaderSocket string
+	// Dial connects to the leader socket. Nil means a unix-socket dial.
+	Dial func(ctx context.Context, path string) (net.Conn, error)
 }
 
 // Adapter reads and steers grok sessions on this machine.
@@ -83,6 +93,9 @@ type Adapter struct {
 	listRows []listRow
 	problem  string
 	turns    sync.WaitGroup
+
+	held          map[string][]held        // session -> messages waiting for its window to close
+	leaderPrompts map[string]*leaderPrompt // prompt id -> a permission request the leader holds open
 }
 
 var _ adapter.Adapter = (*Adapter)(nil)
@@ -109,12 +122,17 @@ func New(opts Options) *Adapter {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Dial == nil {
+		opts.Dial = dialUnix
+	}
 	return &Adapter{
-		opts:    opts,
-		partial: map[string]partialTurn{},
-		prompts: map[string]*pending{},
-		busy:    map[string]bool{},
-		seen:    map[string]time.Time{},
+		opts:          opts,
+		partial:       map[string]partialTurn{},
+		prompts:       map[string]*pending{},
+		busy:          map[string]bool{},
+		seen:          map[string]time.Time{},
+		held:          map[string][]held{},
+		leaderPrompts: map[string]*leaderPrompt{},
 	}
 }
 
@@ -252,8 +270,10 @@ func (a *Adapter) find(id string) (session, bool) {
 }
 
 // Sessions implements adapter.Adapter: grok sessions active within
-// Options.Recent, plus any open in a grok TUI. A session is writable only
-// when it is idle or waiting: not open in a TUI, not mid-turn.
+// Options.Recent, plus any open in a grok TUI. A session is writable when
+// it is idle or waiting, or open in a grok window: a message for a window
+// goes through grok's leader, or waits until the window closes. A session
+// mid-turn in a headless run isn't writable.
 func (a *Adapter) Sessions(ctx context.Context) ([]adapter.Session, error) {
 	all, err := a.scan(a.opts.Recent)
 	if err != nil {
@@ -300,7 +320,7 @@ func (a *Adapter) describe(s session, live bool) adapter.Session {
 	default:
 		out.State = adapter.Idle
 	}
-	out.Writable = out.State != adapter.Running
+	out.Writable = live || out.State != adapter.Running
 	return out
 }
 
