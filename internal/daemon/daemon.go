@@ -245,5 +245,14 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(sctx)
+	if err := srv.Shutdown(sctx); err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		// Something still holds a connection open, such as a client that
+		// connected and never sent a request (net/http waits 5s for those).
+		// Cut it rather than fail the shutdown.
+		_ = srv.Close()
+	}
+	return nil
 }
